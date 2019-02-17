@@ -28,65 +28,58 @@ TCP Currently suffers from certain problems, including:
 ## Features
 **Connectionless Design:**
 The over-arching architecture is client-server to reduce complexity.
-If an IP changes then connections can resume based on the UUID.
-If packets don't match the connection then the packet is dropped.
-The connection is put on hold if too many packets that don't match are found.
-Pings are used to validate the connection and be robust against IP changes and help NAT traversal.
-Pings use a timestamp and random data to prevent packet replay.
-Connections are reset/destroyed server side if max connections are encountered
-and connection is inactive for over 60 seconds.
-Requests can be made to hibernate a connection.
+Peer-to-peer can be done using lower level tools.
+If an IP changes then connections can resume based on their ID.
+If packets don't match the connection, or exhibit anything abnormal,
+then the packet is dropped.
+Pings are used to validate the connection and be robust against IP changes
+and help NAT traversal.
+Pings use a timestamp to prevent packet replay; pings are also used to
+determine EMTU.
+Connections are dropped if fowl play is detected.
 
 
 **Security First:**
-By default, each opened connection's data is encrypted after the initial handshake.
+By default, each opened connection's data is encrypted after the initial
+handshake.
 The exception to encryption is when using Datagram Sockets.
-Currently, I don't see a need to allow unencrypted information.
-Each connection uses asymmetric encryption that requires two sets of keys
-to aid security and uniqueness of connections.
-The first message sent on a connection is used for authentication of the user.
-To whitelist IPs just check the client IP on 'accept' event.
+Encryption can be disabled, but is not recommended.
+Each connection uses asymmetric encryption that requires two sets of keys.
+An initial public key is recommended for initiating a connection to protect
+clients from malicious interference like spoofing the server before the server
+can reply.
+The user is notified of IP changes on a connection so whitelisting can be done.
 
 
-**Multiple Stream Types:**
+**Streams:**
 The river was chosen because data is often sent in streams.
-Each stream is cheap and easy to create/destroy.
-Each stream is one-way communication.
-Each stream is either ordered/unordered and reliable/unreliable.
-Each stream sends messages, which are octet sequences.
+Each stream is...
+* cheap and easy to create (optimistic creation, handshake is used to destroy)
+* a one-way communication (sorry, no auto-duplexing)
+* typed according to orderedness and reliableness
+* message oriented
 Messages can be fragmented.
-The framework will report Maximum Transmission Unit (MTU) and Maximum Message Unit (MMU) to user.
-Guaranteed single packet delivery if &lt;= MTU, cannot send at all if &gt; MMU.
+The framework will report User Maximum Transmission Unit (UMTU)
+and User Maximum Message Unit (UMMS) to user.
+Guaranteed single packet delivery if size is
+less-than-or-equal-to MTU, cannot send at all if size is greater-than MMU.
 
 Each stream sends messages in one of the following ways:
-
-| Types     | Reliable | UnReliable |
-| ---------:|:--------:|:----------:|
-| Ordered   | X        | X          |
-| UnOrdered | X        | X          |
-
-* Ordered/Reliable: Like WebSockets.
-* Ordered/UnReliable: Like UDP, but only the latest is delivered; earlier messages are discarded.
-* UnOrdered/Reliable: Like RUDP.
-* UnOrdered/UnReliable: Like UDP.
+* Ordered/Reliable: Similar to WebSockets. TCP can easily be mimicked.
+* Ordered/UnReliable: Similar to UDP, but only the latest is delivered; earlier messages are discarded.
+* UnOrdered/Reliable: Similar to RUDP or message passing.
+* UnOrdered/UnReliable: UDP, except security is added.
 
 
 **Limits:**
 Note that servers may impose additional restrictions, these are just the defaults.
-* Max opening message size: 4k (4,096 bytes).
-* Max server sessions per port: 255.
-* Max open streams per session: 255.
-* Max outstanding messages per open reliable stream: 255.
-* Max messages per open ordered stream: 4,294,967,295.
-* Max message size: 262,143.
-* Min message size: 0.
-* Max ping: 60 seconds.
-
-
-**Sleep:**
-Give power to the server to sleep certain connections that are temporarily
-unused.
-This is done in a way that the server can persist connections using a database.
+* Max open connections (no zeroeth ID): (2**32) - 1
+* Max open streams per open connection:  (2**16) - 1
+* Max messages per open ordered stream: (2**32) - 1
+* Max outstanding fragments per open connection: (2**16) - 1
+* Minimum UMTU: 576 - 60 - 8 - 1 - 4 - 16
+* Maximum message size: 255 * UMTU
+* Min/Max ping: 15/300 seconds.
 
 
 ## Design Choices
@@ -98,20 +91,21 @@ Keeps things simple and may segment your application design to be more manageabl
 Since you can bind to "::" or "0.0.0.0" the receiver of messages
 should allow for one or more return addresses.
 Which begs the question, how does Node.js determine which interface to send 
-messages on?
-This could be an issue if only one interface is facing the
-correct network.
-Or rather, this becomes the users issue.
+messages on? Clearly one must be chosen for a send to take place.
 
 
 **Connection IDs:**
 Originally I was going to use a 16 octet UUID to identify traffic to an endpoint.
 However, given that lookups must be performed on even spoofed messages and
-the power of an attacker is greater than that of a server, I think that even
-an 8 octet identifier is overkill. Four octets give us the ability to easily
-extract the number and easily check against a map; with (2**32)-1 possible 
-combinations (zero omitted) there should be enough space for a single endpoint without making
-it too easy to spoof connection IDs. This also utilizes less space in the packet.
+the power of an attacker is greater than that of a server,
+I think that even an 8 octet identifier is overkill.
+Four octets give us the ability to easily extract the number
+and easily check against a map;
+with (2**32)-1 possible combinations (zero omitted) there should
+be enough space for a single endpoint without making
+it too easy to spoof connection IDs.
+Attempts at spoofing of connection IDs should be expected.
+Also, this utilizes less space in the packet.
 
 
 **Keep Alive:**
@@ -126,21 +120,26 @@ https://tools.ietf.org/html/rfc5245
 
 **MTU:**
 Hopefully a PLPMTUD implementation can be had, but to start we'll use the
-recommended default MTU. Additional MTU will be set once a ping is established.
+recommended default MTU.
+The first ping will start the PLPMTUD algorithm.
 The recommended search_low for MTU discovery is 1024.
 The recommended eff_pmtu is 1400.
 The recommended Ethernet probe size is 1500.
+The following is a list of MTUs:
+1500 - Ethernet.
 1492 - PPPoE environments. DSL.
 1472 - Maximum for pinging. Otherwise fragmentation occurs.
 1468 - DHCP environments.
 1436 - PPTP environments or VPN.
 1400 - AOl DSL.
 576 - Dial-up.
+
 Default effective MTU (EMTU_S):
 This does not account for the IP header or UDP header.
 IPv4: 576 (absolute low is 68)
 IPv6: 1280
 https://tools.ietf.org/html/rfc1122
+
 Packetization Layer Path MTU Discovery (PLPMTUD):
 Robust methodology for discovering the MTU on a path. Not suseptible to ICMP 
 black holes and ICMP support.
@@ -148,14 +147,21 @@ https://tools.ietf.org/html/rfc4821
 
 
 ## TODO
-Additional research on ICMP and ICE.
+Additional research on ICE.
 
 
 ## Abbreviation Map
+EMTU: Effective MTU
+ICE: Interactive Connectivity Establishment
+ICMP: Internet Control Message Protocol
+PLPMTUD: Packetization Layer Path MTU Discovery
+MMS: Maximum message size.
 MTU: Maximum Transmission Unit
 NAT: Network Address Translation
 TCP: Transmission Control Protocol
 UDP: User Datagram Protocol
+UMMS: User MMS
+UMTU: User MTU
 
 
 ## Dependencies/Technologies

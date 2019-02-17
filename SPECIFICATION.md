@@ -42,85 +42,104 @@ Counters should be reset on each ping? Or some reasonable interval.
 * Streams are created on the fly. The cost of streams is incurred on tear-down.
 * Re-typing a stream is an error and is considered malicious.
 * Streams are unidirectional; client and server maintain separately indexed streams.
+* Steps should be taken to prevent interference created by attaching encrypted data to a different packet type.
+* Network endianness should be big endian, which is what is used when applicable.
 
 
-UDP data passed to user program:
-* IP Address
-* Port
-* Message
-
+## Packets
 0 - Stream
 1 - Connect
 2 - Reject
-3 - Accept
+3 - Challenge
 4 - Ack
-5 - Ping
-6 - Disconnect
 
 
-## Connection Protocol
+### Stream
+These are the most common packet types, so zero is used.
 
-// TODO Send client version.
-**[Client] Open:**
-If the address+port are already in use then reject as potentially malicious, let a timeout cleanup the entry.
+| Octets | Field |
+|:------ |:----- |
+| 1 | Control
+| 4 | ID
+| 16 | Encrypt
+| 8 | Milliseconds timestamp
+| Variable | REQUESTS+
+
+
+### Connect
+If the address+port are already in use then reject as potentially malicious,
+let a timeout cleanup the entry.
 Otherwise, create a temporary entry for the client.
-Floods of open connection requests should be met with increasingly reduced timeouts; if extreme cullings are taking place then errors will be emitted.
+Floods of open connection requests should be met with increasingly reduced
+timeouts;
+if extreme cullings are taking place then errors will be emitted.
+The packet is sealed with the servers public key, this helps ensure that the
+correct server is being reached.
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 32 | Public Key Client
+| 16 | Encrypt
+| 4 | ID for responses
+| 2 | Version ID
+| 24 | Nonce client
+| 32 | Public key client
 
 
-// TODO Respond with server version.
-// TODO Add a signature to validate that the client has connected to a valid server.
-// TODO Add a feature that I just forgot about.
-// TODO Add a flag allowing for connection hibernation.
-**[Server] Ack:**
-If the client does not respond with its nonce, then we have a problem.
-The client must assume that the server has as much currency and stream limitations as the client.
+### Reject
+Servers should reject invalid connections out of politeness.
+Options for ignoring connections that may be malicious should be provided.
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 24 | Nonce for Decryption
-| 32 | Public Key Server
-| ENCRYPT_PADDING |
-| 2 | Initial currency
+| 4 | ID
+| 16 | Encrypt
+| 2 | Rejection type
+| 24 | Nonce as token
+
+Rejection types are:
+0 - Unknown
+1 - Whitelist
+2 - Overloaded with requests/connections
+3 - Invalid request
+4 - Incompatible version
+
+
+### Challenge
+Challenge the connect request.
+Return the server's nonce and public key.
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Control
+| 4 | ID
+| 16 | Encrypt
 | 2 | Max streams
-| 16 | UUID to identify this connection
-| 24 | Nonce
+| 2 | Initial currency
+| 4 | ID for requests
+| 24 | Nonce server
+| 32 | Public key server
 
 
-**[Client] Confirm:**
+### Accept
+Accept the server's challenge.
+If the client does not respond then we close the connection.
+The client cannot have lower limitations than the server.
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 16 | Client ID
-| 24 | Nonce for Decryption
-| ENCRYPT_PADDING |
-| 24 | Nonce
+| 4 | ID
+| 16 | Encrypt
+| 2 | Max streams
+| 2 | Initial currency
+| 24 | Nonce again for confirmation
 
 
-**[Server or Client] Stream:**
-| Octets | Field |
-|:------ |:----- |
-| 1 | Control
-| 16, Client Only | Connection UUID
-| ENCRYPT_PADDING |
-| 8 | Timestamp
-| REQUESTS+ |
-
-
-**[Server or Client] Disconnect:**
-| Octets | Field |
-|:------ |:----- |
-| 1 | Control
-| 16, Client Only | Connection UUID
-| ENCRYPT_PADDING |
-| 8 | Timestamp
-| 24 | Nonce
-
-
-## Stream Control Protocol
+## Stream Protocol
+The Stream Protocol is internal and is after decryption to prevent malicious
+messages.
 As a checksum and to save an extra byte, the upper two bits of the Stream
 Control value are used to store the stream type, when applicable.
 
