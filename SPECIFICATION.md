@@ -46,12 +46,16 @@ Counters should be reset on each ping? Or some reasonable interval.
 * Network endianness should be big endian, which is what is used when applicable.
 
 
+## Timestamp
+Timestamps are 8 bytes and are milliseconds since the Unix epoch.
+
+
 ## Packets
 0 - Stream
 1 - Connect
 2 - Reject
 3 - Challenge
-4 - Ack
+4 - Accept
 
 
 ### Stream
@@ -95,6 +99,7 @@ Options for ignoring connections that may be malicious should be provided.
 | 1 | Control
 | 4 | ID
 | 16 | Encrypt
+| 1 | Stream control byte (0xFF)
 | 2 | Rejection type
 | 24 | Nonce as token
 
@@ -140,32 +145,62 @@ The client cannot have lower limitations than the server.
 ## Stream Protocol
 The Stream Protocol is internal and is after decryption to prevent malicious
 messages.
+All design should protect against packet replay.
 As a checksum and to save an extra byte, the upper two bits of the Stream
 Control value are used to store the stream type, when applicable.
 
-**Challenge/Met:**
-When an IP address of a given connection changes a challenge is sent.
-If timeout occurs, then connection is dropped.
-This is also used as a ping mechanism.
-The timestamp must be greater than the previous timestamp from the previous challenge.
-The returned response must have the same token and the senders timestamp.
-| Octets | Field |
-|:------ |:----- |
-| 1 | Stream Control
-| 8 | Timestamp in Unix Epoch Milliseconds of Sender
-| 24 | Challenge random value
+0 - Ping
+1 - Ping Response
+2 - Data
+3 - Data Validate
+4 - Data Received
+5 - Backpressure
+6 - Backpressure Confirm
+7 - Kill
+8 - Kill Challenge
+9 - Kill Accept
+10 - Disconnect
+11 - Disconnect Challenge
+12 - Disconnect Accept
 
-**Payload:**
+
+### Ping
+Used to determine MTU as well as keep-alive.
+The timestamp must be greater than the previous timestamp from the previous ping.
+The returned response must have the same token and the senders timestamp.
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 1 | Stream Id
+| 8 | Timestamp
+| 24 | Random value
+| Variable | Padding
+
+
+### Ping Response
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 8 | Timestamp
+| 24 | Random value
+
+
+### Data
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 2 | Stream Id
 | 4 | Sequence
 | 1 | Fragment
+| 1 | Fragment Total
 | 2 | Payload Length
 | V | Payload
 
-**Received/Resend:**
+
+### Data Validate
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
@@ -173,29 +208,90 @@ The returned response must have the same token and the senders timestamp.
 | 4 | Sequence
 | 1 | Fragment
 
-**Freeze/UnFreeze:**
-// TODO Implement later.
+
+### Data Received
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
 | 2 | Stream Id
+| 4 | Sequence
+| 1 | Fragment
 
-**Kill/Ack/Confirm Streams:**
+
+### Backpressure
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
+| 1 | Start/stop
+| 8 | Timestamp
+| 2 | Stream Id
+
+
+### Backpressure Confirm
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 1 | Start/stop
+| 8 | Timestamp
+| 2 | Stream Id
+
+
+### Kill
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 8 | Timestamp
 | 2 | Stream Id
 | 4 | Final sequence value
 
-**Set/Confirm Streams:**
-| Octets | Field |
-|:------ |:----- |
-| 1 | Stream Control
-| 2 | Amount
 
-**Set/Confirm Currency:**
+### Kill Challenge
+
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 2 | Amount
+| 8 | Timestamp
+| 2 | Stream Id
+| 4 | Final sequence value
+
+
+### Kill Accept
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 8 | Timestamp
+| 2 | Stream Id
+| 4 | Final sequence value
+
+
+### Disconnect
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 8 | Timestamp
+| 24 | Random token
+
+
+### Disconnect Challenge
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 8 | Timestamp
+| 24 | Random token
+
+
+### Disconnect Accept
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control
+| 8 | Timestamp
+| 24 | Random token
 

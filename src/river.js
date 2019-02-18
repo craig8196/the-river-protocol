@@ -1,5 +1,5 @@
 /**
- * @file Client creation code.
+ * @file Connection creation code.
  * @author Craig Jacobson
  */
 /* Core */
