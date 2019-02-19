@@ -6,8 +6,10 @@ const crypto = require('./crypto.js');
 
 describe('crypto', () => {
   test('is id', () => {
-    let id = crypto.mkId();
+    const id = crypto.mkId();
+    const maxValue = Math.pow(2, 32) - 1;
     expect(typeof id === 'number').toBeTruthy();
+    expect(id <= maxValue).toBeTruthy();
   });
 
   test('is nonce', () => {

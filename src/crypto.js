@@ -12,15 +12,16 @@ const sodium = require('sodium-native');
 
 
 /**
- * Create a random identifier.
- * @return A value that can fit in an UInt32 space.
+ * Create a random identifier that fits in UInt32 space.
+ * @param {Buffer} buf - Optional. Buffer to store random bytes until they are read.
+ * @return {Number} Random number.
  */
 function mkId(buf) {
-  if (!buf) {
+  if (!buf || buf.length < 4) {
     buf = Buffer.allocUnsafe(4);
   }
 
-  sodium.randombytes_buf(buf)
+  sodium.randombytes_buf(buf);
 
   return buf.readUInt32LE(0);
 }
@@ -29,14 +30,12 @@ const NONCE_BYTES = sodium.crypto_secretbox_NONCEBYTES;
 
 /**
  * Create nonsense to aid in encryption. Must be known to both parties.
- * @return {Buffer} Nonsense array.
+ * @param {Buffer} buf - Optional. Recycled buffer to fill.
+ * @return {Buffer} Nonsense.
  */
 function mkNonce(buf) {
-  if (!buf) {
-    buf = Buffer.allocUnsafe(sodium.crypto_secretbox_NONCEBYTES);
-  }
-  else if (buf.length < sodium.crypto_secretbox_NONCEBYTES) {
-    return null;
+  if (!buf || buf.length < NONCE_BYTES) {
+    buf = Buffer.allocUnsafe(NONCE_BYTES);
   }
 
   sodium.randombytes_buf(buf);
@@ -45,24 +44,21 @@ function mkNonce(buf) {
 }
 
 const PUBLIC_KEY_BYTES = sodium.crypto_box_PUBLICKEYBYTES;
+const SECRET_KEY_BYTES = sodium.crypto_box_SECRETKEYBYTES;
 
 /**
  * Create keys for asymetric encryption. Only expose your public key.
+ * @param {Buffer} publicKey - Optional. Recycled buffer to fill.
+ * @param {Buffer} secretKey - Optional. Recycled buffer to fill.
  * @return {Object} Has publicKey {Buffer} and secretKey {Buffer}.
  */
 function mkKeyPair(publicKey, secretKey) {
-  if (!publicKey) {
-    publicKey = Buffer.allocUnsafe(sodium.crypto_box_PUBLICKEYBYTES);
-  }
-  else if (publicKey.length < sodium.crypto_box_PUBLICKEYBYTES) {
-    return null;
+  if (!publicKey || publicKey.length < PUBLIC_KEY_BYTES) {
+    publicKey = Buffer.allocUnsafe(PUBLIC_KEY_BYTES);
   }
 
-  if (!secretKey) {
-    secretKey = Buffer.allocUnsafe(sodium.crypto_box_SECRETKEYBYTES);
-  }
-  else if (secretKey.length < sodium.crypto_box_SECRETKEYBYTES) {
-    return null;
+  if (!secretKey || secretKey.length < SECRET_KEY_BYTES) {
+    secretKey = Buffer.allocUnsafe(SECRET_KEY_BYTES);
   }
 
   sodium.crypto_box_keypair(publicKey, secretKey);
@@ -77,12 +73,12 @@ const BOX_MAC_BYTES = sodium.crypto_box_MACBYTES;
 
 /**
  * Encrypt a message for a specific person.
- * @param {Buffer} emessage - Encrypted message output buffer.
+ * @param {Buffer} emessage - Output. Encrypted message output buffer.
  * @param {Buffer} message - Message to encrypt.
  * @param {Buffer} nonce - Random nonce variable, must be same as when decrypted.
  * @param {Buffer} publicKey - Public key of the decrypting party.
  * @param {Buffer} secretKey - Secret key of the encrypting party.
- * @return {Buffer} Encrypted message.
+ * @return {Bool} True on success; false otherwise.
  */
 function box(emessage, message, nonce, publicKey, secretKey) {
   try {
@@ -96,11 +92,12 @@ function box(emessage, message, nonce, publicKey, secretKey) {
 
 /**
  * Decrypt a message from a specific person.
- * @param {Buffer} emessage - Encrypted message.
+ * @param {Buffer} message - Output. Decrypted message.
+ * @param {Buffer} emessage - Message to decrypt.
  * @param {Buffer} nonce - Random nonce variable, must be same as when encrypted.
  * @param {Buffer} publicKey - Public key of the encrypting party.
  * @param {Buffer} secretKey - Secret key of the decrypting party.
- * @return {Buffer} Decrypted message.
+ * @return {Bool} True on success; false otherwise.
  */
 function unbox(message, emessage, nonce, publicKey, secretKey) {
   return sodium.crypto_box_open_easy(message, emessage, nonce, publicKey, secretKey);
@@ -108,6 +105,13 @@ function unbox(message, emessage, nonce, publicKey, secretKey) {
 
 const SEAL_MAC_BYTES = sodium.crypto_box_SEALBYTES;
 
+/**
+ * Encrypt the message.
+ * @param {Buffer} emessage - Output. Encrypted message.
+ * @param {Buffer} message - Message to encrypt.
+ * @param {Buffer} publicKey - Key to use to encrypt.
+ * @return {Bool} True on success; false otherwise.
+ */
 function seal(emessage, message, publicKey) {
   try {
     sodium.crypto_box_seal(emessage, message, publicKey);
@@ -118,6 +122,14 @@ function seal(emessage, message, publicKey) {
   }
 }
 
+/**
+ * Decrypt the message.
+ * @param {Buffer} emessage - Output. Encrypted message.
+ * @param {Buffer} message - Message to encrypt.
+ * @param {Buffer} publicKey - Key used to encrypt.
+ * @param {Buffer} secretKey - Key to use to decrypt.
+ * @return {Bool} True on success; false otherwise.
+ */
 function unseal(message, emessage, publicKey, secretKey) {
   return sodium.crypto_box_seal_open(message, emessage, publicKey, secretKey);
 }

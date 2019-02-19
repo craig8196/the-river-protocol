@@ -1,75 +1,94 @@
-
+/**
+ * @file Wrappers for different socket types to make sockets generic.
+ * @author Craig Jacobson
+ */
+/* Core */
 const dgram = require('dgram');
+/* Community */
 const isIp = require('is-ip');
 const isValidPath = require('is-valid-path');
+/* Custom */
+'use strict';
 
 
-// TODO create a way for IPC using the same methodologies.
-class UdsSocketWrapper {
-  constructor(address) {
-  }
-}
-
-class UdpSocketWrapper {
-  constructor(options) {
-    this.udp = dgram.createSocket('udp4');
-    this.bindAddress = options.address;
-    this.bindPort = options.port;
-    this.sendAddress = options.sendAddress;
-    this.sendPort = options.sendPort;
-
-    this.udp.on('listening', this.doListening.bind(this));
-  }
-
-  doListening(args) {
-    this.emit('listening', args);
+class SocketInterface {
+  constructor() {
   }
 
   on() {
-    this.udp.on.apply(this.udp, arguments);
+    throw new Error('on unimplemented');
   }
-  
-  bind(cb) {
-    if (this.bindAddress) {
-      this.udp.bind(this.bindPort, this.bindAddress);
-    }
-    else {
-      this.udp.bind(this.bindPort, cb);
-    }
+
+  off() {
+    throw new Error('off unimplemented');
+  }
+
+  bind() {
+    throw new Error('bind unimplemented');
+  }
+}
+
+class SenderInterface {
+  constructor() {
   }
 
   send(msg, cb) {
-    this.udp.send(msg, this.sendPort, this.sendAddress, cb);
+    cb(new Error('send unimplemented, message not delivered: ' + String(msg)));
+  }
+}
+
+class UdpSender extends SenderInterface {
+  constructor(socket, port, address) {
+    super();
+
+    this.socket = socket;
+    this.port = port;
+    this.address = address;
+  }
+
+  send(msg, cb) {
+    this.socket.send(msg, this.port, this.address, cb);
+  }
+}
+
+class UdpSocket extends SocketInterface {
+  constructor(udpType, options) {
+    super();
+
+    this.socket = dgram.createSocket(udpType);
+    this.address = options.address;
+    this.port = options.port;
+  }
+
+  on() {
+    this.socket.on.apply(this.socket, arguments);
+  }
+  
+  off() {
+    this.socket.off.apply(this.socket, arguments);
+  }
+  
+  bind(cb) {
+    this.socket.bind({ exclusive: true, port: this.port, address: this.address }, cb);
+  }
+
+  mkSender(port, address) {
+    return new UdpSender(this.socket, port, address);
   }
 }
 
 /**
- * Creates
- * @function
- * @param {SocketType} socket_type - Required. Specify what type of connection this is for.
- * @param {Object} options - Required
- * @param {string} options.port - The port to bind to, random if not specified.
- * @param {string} options.address - The address to bind to, random if not specified.
+ * Creates a socket using for the protocol.
+ * @param {Object} options - Optional.
+ * @param {string} options.port - Optional. The port to bind to, random if not specified.
+ * @param {string} options.address - Optional. The address to bind to, all if not specified.
  * @return
  */
-function createClientSocket(options) {
-  options.exclusive = true;
-  return new UdpSocketWrapper('udp4', options);
-  /*
-  let socket_type = 'local';
-  let sanitized_options = {
-    'exclusive': true,
-  };
-
-  if (options.port) {
-    if (!(Number.isInteger(options.port) && options.port <= 65535 && options.port >= 1)) {
-      throw new Error('Invalid port value: ' + options.port);
-    }
-    sanitized_options.port = options.port;
-  }
+function mkSocket(options) {
+  let socket_type = 'udp4';
 
   if (options.address) {
-    if (isIp.v4(options.address)) {
+    if ('localhost' === options.address || isIp.v4(options.address)) {
       socket_type = 'udp4';
     }
     else if (isIp.v6(options.address)) {
@@ -79,28 +98,31 @@ function createClientSocket(options) {
       socket_type = 'local';
     }
     else {
-      throw new Error('Invalid IP address: ' + options.address);
+      throw new Error('Invalid address: ' + options.address);
     }
-    sanitized_options.address = options.address;
   }
   else {
-    sanitized_options.address = 
+    options.address = 'localhost';
   }
+
+  if (options.port) {
+    if (!(Number.isInteger(options.port) && options.port <= 65535 && options.port >= 1)) {
+      throw new Error('Invalid port: ' + options.port);
+    }
+  }
+
 
   if (socket_type !== 'local') {
-    return new UdpSocketWrapper(socket_type, sanitized_options);
+    return new UdpSocket(socket_type, options);
   }
   else {
-    return new UdsSocketWrapper(sanitized_options.address);
+    throw new Error('UDS support not available yet.');
   }
-  */
-}
-
-function createServerSocket(socketType, options) {
 }
 
 module.exports = {
-  createClientSocket,
-  createServerSocket,
+  SocketInterface,
+  SenderInterface,
+  mkSocket,
 };
 

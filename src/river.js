@@ -19,9 +19,9 @@ const lengths = spec.lengths;
 
 class Trans extends Enum {}
 Trans.initEnum([
-  // Client events.
-  'START',// Start on client was called.
-  'STOP',// Stop on client was called.
+  // River events.
+  'START',// Start on river was called.
+  'STOP',// Stop on river was called.
 
   // Socket events.
   'BIND',// Successful bind/listening on socket.
@@ -55,33 +55,33 @@ function transFromControl(c) {
  * The current timeout is used up to three times before we exponentially
  * backoff.
  */
-function handleOpenTimeout(client, message) {
-  if (3 <= client.openTimeoutCount) {
-    const prevTimeout = client.openTimeoutMs;
-    client.openTimeoutMs = client.openTimeoutMs * 2;
-    client.emit('timeout', prevTimeout, client.openTimeoutMs);
-    if (client.openTimeoutMs > spec.timeouts.OPEN_MAX) {
-      client.openTimeoutMs = spec.timeouts.OPEN_MAX;
+function handleOpenTimeout(river, message) {
+  if (3 <= river.openTimeoutCount) {
+    const prevTimeout = river.openTimeoutMs;
+    river.openTimeoutMs = river.openTimeoutMs * 2;
+    river.emit('timeout', prevTimeout, river.openTimeoutMs);
+    if (river.openTimeoutMs > spec.timeouts.OPEN_MAX) {
+      river.openTimeoutMs = spec.timeouts.OPEN_MAX;
     }
   }
 
-  client.socket.send(message);
-  client.openTimeoutCount++;
-  client.openTimeout = setTimeout(handleOpenTimeout, client.openTimeoutMs, client, message);
+  river.socket.send(message);
+  river.openTimeoutCount++;
+  river.openTimeout = setTimeout(handleOpenTimeout, river.openTimeoutMs, river, message);
 }
 
-function handleDisconnectTimeout(client, message) {
-  if (3 <= client.disconnectTimeoutCount) {
-    client.openTimeoutCount = 0;
-    client.disconnectTimeoutMs = client.disconnectTimeoutMs * 2;
-    if (client.disconnectTimeoutMs > spec.timeouts.DISCONNECT_MAX) {
-      client.openTimeoutMs = spec.timeouts.OPEN_MAX;
+function handleDisconnectTimeout(river, message) {
+  if (3 <= river.disconnectTimeoutCount) {
+    river.openTimeoutCount = 0;
+    river.disconnectTimeoutMs = river.disconnectTimeoutMs * 2;
+    if (river.disconnectTimeoutMs > spec.timeouts.DISCONNECT_MAX) {
+      river.openTimeoutMs = spec.timeouts.OPEN_MAX;
     }
   }
 
-  client.socket.send(message);
-  client.disconnectTimeoutCount++;
-  client.disconnectTimeout = setTimeout(handleDisconnectTimeout, client.disconnectTimeoutMs, client, message);
+  river.socket.send(message);
+  river.disconnectTimeoutCount++;
+  river.disconnectTimeout = setTimeout(handleDisconnectTimeout, river.disconnectTimeoutMs, river, message);
 }
 
 /**
@@ -96,7 +96,7 @@ function isValidMessage(message) {
  * Process the message thought to be an ACK.
  * @return {bool} True if this is a valid message; false otherwise.
  */
-function processAck(client, msg, validate) {
+function processAck(river, msg, validate) {
   const c = msg[0];
   if (control.ACK !== c) {
     return false;
@@ -106,7 +106,7 @@ function processAck(client, msg, validate) {
   msg.copy(serverKey, 0, 1 + lengths.NONCE, lengths.KEY);
 
   if (validate) {
-    if (!client.serverKey.equals(serverKey)) {
+    if (!river.serverKey.equals(serverKey)) {
       return false;
     }
   }
@@ -115,7 +115,7 @@ function processAck(client, msg, validate) {
   const encrypt = msg.slice(1 + lengths.NONCE + lengths.KEY);
   const decrypt = Buffer.allocUnsafe(lengths.ACK_DECRYPT);
 
-  if (!crypt.unbox(decrypt, encrypt, nonce, serverKey, client.secretKey)) {
+  if (!crypt.unbox(decrypt, encrypt, nonce, serverKey, river.secretKey)) {
     return false;
   }
 
@@ -135,11 +135,11 @@ function processAck(client, msg, validate) {
   decrypt.copy(serverNonce, 0, 4 + lengths.UUID, 4 + lengths.UUID + lengths.NONCE);
 
   if (validate) {
-    if (client.maxCurrency === maxCurrency
-        && client.maxStreams === maxStreams
-        && client.serverNonce.equals(serverNonce)
-        && client.serverKey.equals(serverKey)
-        && client.id.equals(uuid))
+    if (river.maxCurrency === maxCurrency
+        && river.maxStreams === maxStreams
+        && river.serverNonce.equals(serverNonce)
+        && river.serverKey.equals(serverKey)
+        && river.id.equals(uuid))
     {
       return true;
     }
@@ -148,12 +148,12 @@ function processAck(client, msg, validate) {
     }
   }
   else {
-    client.maxCurrency = maxCurrency;
-    client.maxStreams = maxStreams;
+    river.maxCurrency = maxCurrency;
+    river.maxStreams = maxStreams;
 
-    client.id = uuid;
-    client.serverNonce = serverNonce;
-    client.serverKey = serverKey;
+    river.id = uuid;
+    river.serverNonce = serverNonce;
+    river.serverKey = serverKey;
 
     return true;
   }
@@ -162,7 +162,7 @@ function processAck(client, msg, validate) {
 /**
  * Unwrap and process each message.
  */
-function processMessages(/* client, msg */) {
+function processMessages(/* river, msg */) {
   return false;
 }
 
@@ -170,41 +170,41 @@ function processMessages(/* client, msg */) {
 class State extends Enum {}
 State.initEnum({
   CREATE: {
-    enter(/* client */) {
+    enter(/* river */) {
     },
 
-    exit(/* client */) {
+    exit(/* river */) {
     },
 
-    transition(transType, client) {
+    transition(transType, river) {
       switch (transType) {
         case Trans.START:
-          client.state = State.START;
+          river.state = State.START;
           break;
         case Trans.STOP:
-          client.state = State.END;
+          river.state = State.END;
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   START: {
-    enter(client) {
-      client.emit('start');
+    enter(river) {
+      river.emit('start');
 
-      client.listenToError = true;
-      client.listenToMessage = true;
-      client.listenToBind = true;
-      client.listenToClose = true;
+      river.listenToError = true;
+      river.listenToMessage = true;
+      river.listenToBind = true;
+      river.listenToClose = true;
 
       function handleError(error) {
-        if (client.listenToError) {
-          client.state.transition(Trans.ERROR, client, error);
+        if (river.listenToError) {
+          river.state.transition(Trans.ERROR, river, error);
         }
       }
 
@@ -212,33 +212,33 @@ State.initEnum({
        * Do preliminary screening and pass messages along as needed.
        */
       function handleMessage(message) {
-        if (client.listenToMessage) {
+        if (river.listenToMessage) {
           if (message.length >= lengths.MIN_MESSAGE && control.isValidControl(message[0])) {
             const c = message[0];
-            client.state.transition(transFromControl(c), client, message);
+            river.state.transition(transFromControl(c), river, message);
           }
           else {
             const l = message.length;
             const c = l > 0 ? message[0] : 'undefined';
             let err = new Error('Invalid message received: length [' + l + '], control [' + c + ']');
-            client.emit('error', err);
+            river.emit('error', err);
           }
         }
       }
 
       function handleListening() {
-        if (client.listenToBind) {
-          client.state.transition(Trans.BIND, client, null);
+        if (river.listenToBind) {
+          river.state.transition(Trans.BIND, river, null);
         }
       }
 
       function handleClose() {
-        if (client.listenToClose) {
-          client.state.transition(Trans.CLOSE, client, null);
+        if (river.listenToClose) {
+          river.state.transition(Trans.CLOSE, river, null);
         }
       }
 
-      const socket = client.socket;
+      const socket = river.socket;
       socket.on('error', handleError);
       socket.on('message', handleMessage);
       socket.on('listening', handleListening);
@@ -246,298 +246,298 @@ State.initEnum({
       socket.bind();
     },
 
-    exit(client) {
-      client.listenToBind = false;
+    exit(river) {
+      river.listenToBind = false;
     },
 
-    transition(transType, client) {
+    transition(transType, river) {
       switch (transType) {
         case Trans.BIND:
-          client.state = State.BIND;
+          river.state = State.BIND;
           break;
         case Trans.CLOSE:
           {
             let err = new Error('Socket closed when expecting socket bind.');
-            client.emit('error', err);
-            client.state = State.END;
+            river.emit('error', err);
+            river.state = State.END;
           }
           break;
         case Trans.STOP:
-          client.state = State.END;
+          river.state = State.END;
           break;
         case Trans.ERROR:
           {
             let err = new Error('Unable to bind to socket.');
-            client.emit('error', err);
-            client.state = State.END;
+            river.emit('error', err);
+            river.state = State.END;
           }
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   BIND: {
-    enter(client) {
-      const socket = client.socket;
-      client.emit('bind', { port: socket.port, address: socket.address });
+    enter(river) {
+      const socket = river.socket;
+      river.emit('bind', { port: socket.port, address: socket.address });
 
       const keys = crypt.mkKeyPair();
-      client.publicKey = keys.publicKey;
-      client.secretKey = keys.secretKey;
-      client.nonce = crypt.mkNonce();
+      river.publicKey = keys.publicKey;
+      river.secretKey = keys.secretKey;
+      river.nonce = crypt.mkNonce();
 
 
       let message = Buffer.allocUnsafe(lengths.OPEN);
       message[0] = control.OPEN;
-      client.publicKey.copy(message, 1);
+      river.publicKey.copy(message, 1);
 
-      client.openTimeoutCount = 0;
-      client.openTimeoutMs = spec.timeouts.OPEN;
+      river.openTimeoutCount = 0;
+      river.openTimeoutMs = spec.timeouts.OPEN;
 
-      handleOpenTimeout(client, message);
+      handleOpenTimeout(river, message);
     },
 
-    exit(client) {
-      if (client.openTimeout) {
-        clearTimeout(client.openTimeout);
+    exit(river) {
+      if (river.openTimeout) {
+        clearTimeout(river.openTimeout);
       }
     },
 
-    transition(transType, client, msg) {
+    transition(transType, river, msg) {
       switch (transType) {
         case Trans.ACK:
-          if (processAck(client, msg)) {
-            client.state = State.OPEN;
+          if (processAck(river, msg)) {
+            river.state = State.OPEN;
           }
           else {
             let err = new Error('Invalid ACK message... discarding');
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
         case Trans.CLOSE:
-          client.state = State.END;
+          river.state = State.END;
           break;
         case Trans.STOP:
-          client.state = State.UNBIND;
+          river.state = State.UNBIND;
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   OPEN: {
-    enter(client) {
+    enter(river) {
       const message = Buffer.allocUnsafe(lengths.CONFIRM);
       message[0] = control.CONFIRM;
-      client.id.copy(message, 1, 0, lengths.UUID);
+      river.id.copy(message, 1, 0, lengths.UUID);
       const nonce = crypt.mkNonce();
       nonce.copy(message, 1 + lengths.UUID, 0, lengths.NONCE);
       const encrypt = Buffer.allocUnsafe(lengths.CONFIRM_ENCRYPT);
-      crypt.box(encrypt, client.nonce, nonce, client.serverKey, client.secretKey);
+      crypt.box(encrypt, river.nonce, nonce, river.serverKey, river.secretKey);
       encrypt.copy(message, 1 + lengths.UUID + lengths.NONCE, 0, lengths.CONFIRM_ENCRYPT);
 
-      client.confirmMessage = message;
-      client.socket.send(message);
+      river.confirmMessage = message;
+      river.socket.send(message);
     },
 
-    exit(client) {
-      if (client.confirmMessage) {
-        client.confirmMessage = null;
+    exit(river) {
+      if (river.confirmMessage) {
+        river.confirmMessage = null;
       }
     },
 
-    transition(transType, client, msg) {
+    transition(transType, river, msg) {
       switch (transType) {
         case Trans.MESSAGE:
           if (isValidMessage(msg)) {
-            client.state = State.CONNECTED;
-            client.state.transition(transType, client, msg);
+            river.state = State.CONNECTED;
+            river.state.transition(transType, river, msg);
           }
           else {
             let err = new Error('Invalid message received... discarding');
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
         case Trans.STOP:
-          client.state = State.DISCONNECT;
+          river.state = State.DISCONNECT;
           break;
         case Trans.CLOSE:
           {
             let err = new Error('Unexpected socket close');
-            client.emit('error', err);
-            client.state = State.END;
+            river.emit('error', err);
+            river.state = State.END;
           }
           break;
         case Trans.ACK:
-          if (processAck(client, msg, true)) {
-            client.socket.send(client.confirmMessage);
+          if (processAck(river, msg, true)) {
+            river.socket.send(river.confirmMessage);
           }
           else {
             /* How do we know we're connected to the correct server? Because they have our key. */
             let err = new Error('Invalid or conflicting ACK message... discarding');
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   CONNECTED: {
-    enter(client) {
-      client.emit('connected');
-      client.streams = new StreamManager(client);
+    enter(river) {
+      river.emit('connected');
+      river.streams = new StreamManager(river);
     },
 
-    exit(client) {
-      client.streams.destroy();
+    exit(river) {
+      river.streams.destroy();
     },
 
-    transition(transType, client, msg) {
+    transition(transType, river, msg) {
       switch (transType) {
         case Trans.MESSAGE:
-          if (!processMessages(client, msg)) {
+          if (!processMessages(river, msg)) {
             let err = new Error('Breach of protocol... disconnecting');
-            client.emit('error', err);
-            client.state = State.UNBIND;
+            river.emit('error', err);
+            river.state = State.UNBIND;
           }
           /* else: successful processing */
           break;
         case Trans.STOP:
-          client.state = State.DISCONNECT;
+          river.state = State.DISCONNECT;
           break;
         case Trans.CLOSE:
           {
             let err = new Error('Unexpected socket close');
-            client.emit('error', err);
-            client.state = State.END;
+            river.emit('error', err);
+            river.state = State.END;
           }
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   DISCONNECT: {
-    enter(client) {
+    enter(river) {
       const message = Buffer.allocUnsafe(lengths.DISCONNECT);
       message[0] = control.DISCONNECT;
-      const id = client.id;
+      const id = river.id;
       id.copy(message, 1, 0, lengths.UUID);
 
       const decrypt = Buffer.allocUnsafe(lengths.DISCONNECT_DECRYPT);
       const timestamp = util.now();
       timestamp.copy(decrypt, 1 + lengths.UUID, 0, lengths.TIMESTAMP);
-      const nonce = client.nonce;
+      const nonce = river.nonce;
       nonce.copy(decrypt, 1 + lengths.UUID + lengths.TIMESTAMP, 0, lengths.NONCE);
 
       const encrypt = Buffer.allocUnsafe(lengths.DISCONNECT_ENCRYPT);
-      crypt.box(encrypt, decrypt, nonce, client.serverKey, client.secretKey);
+      crypt.box(encrypt, decrypt, nonce, river.serverKey, river.secretKey);
 
       encrypt.copy(message, 1 + lengths.UUID, 0, lengths.DISCONNECT_ENCRYPT);
 
-      client.disconnectTimeoutCount = 0;
-      client.disconnectMessage = message;
-      handleDisconnectTimeout(client, message);
+      river.disconnectTimeoutCount = 0;
+      river.disconnectMessage = message;
+      handleDisconnectTimeout(river, message);
     },
 
-    exit(client) {
-      client.disconnectMessage = null;
-      if (client.disconnectTimeout) {
-        clearTimeout(client.disconnectTimeout);
+    exit(river) {
+      river.disconnectMessage = null;
+      if (river.disconnectTimeout) {
+        clearTimeout(river.disconnectTimeout);
       }
-      client.emit('disconnect');
+      river.emit('disconnect');
     },
 
-    transition(transType, client, msg) {
+    transition(transType, river, msg) {
       switch (transType) {
         case Trans.MESSAGE:
-          if (!processMessages(client, msg)) {
+          if (!processMessages(river, msg)) {
             let err = new Error('Breach of protocol... disconnecting');
-            client.emit('error', err);
-            client.state = State.UNBIND;
+            river.emit('error', err);
+            river.state = State.UNBIND;
           }
           /* else: successful processing */
           break;
         case Trans.DISCONNECT:
-          client.state = State.UNBIND;
+          river.state = State.UNBIND;
           break;
         case Trans.STOP:
-          client.state = State.DISCONNECT;
+          river.state = State.DISCONNECT;
           break;
         case Trans.CLOSE:
           {
             let err = new Error('Unexpected socket close');
-            client.emit('error', err);
-            client.state = State.END;
+            river.emit('error', err);
+            river.state = State.END;
           }
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   UNBIND: {
-    enter(client) {
-      client.socket.close();
+    enter(river) {
+      river.socket.close();
     },
 
-    exit(/* client */) {
+    exit(/* river */) {
     },
 
-    transition(transType, client) {
+    transition(transType, river) {
       switch (transType) {
         case Trans.CLOSE:
-          client.state = State.END;
+          river.state = State.END;
           break;
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
-            client.emit('error', err);
+            river.emit('error', err);
           }
           break;
       }
     }
   },
   END: {
-    enter(client) {
-      client.emit('end');
+    enter(river) {
+      river.emit('end');
     },
 
-    exit(/* client */) {
+    exit(/* river */) {
     },
 
-    transition(transType, client) {
+    transition(transType, river) {
       /* What is the proper behavior? Do nothing? */
       let err = new Error('Invalid transition attempt: ' + String(transType));
-      client.emit('error', err);
+      river.emit('error', err);
     }
   },
 });
 
 
-class Client extends EventEmitter {
+class River extends EventEmitter {
   constructor(socket) {
     super();
 
@@ -582,11 +582,7 @@ class Client extends EventEmitter {
   }
 }
 
-function createClient(socket) {
-  return new Client(socket);
-}
-
 module.exports = {
-  createClient,
+  River,
 };
 
