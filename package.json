@@ -1,7 +1,18 @@
 {
-  "name": "trip",
-  "version": "0.0.0",
-  "description": "The River Protocol (TRiP)",
+  "name": "js-trp",
+  "version": "0.1.0",
+  "description": "The River Protocol (TRP)",
+  "keywords": [],
+  "author": "Craig Jacobson",
+  "license": "MIT",
+  "homepage": "https://github.com/craig8196/the-river-protocol",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/craig8196/the-river-protocol.git",
+  },
+  "bugs": {
+    "url": "https://github.com/craig8196/the-river-protocol/issues"
+  },
   "main": "index.js",
   "scripts": {
     "one": "jest src/crypto.test.js",
@@ -9,8 +20,6 @@
     "test": "jest src/**.test.js",
     "coverage": "jest --coverage --collectCoverageFrom=src/**.js"
   },
-  "author": "Craig Jacobson",
-  "license": "MIT",
   "dependencies": {
     "enumify": "^1.0.4",
     "is-ip": "^2.0.0",
