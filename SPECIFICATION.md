@@ -51,14 +51,17 @@ Timestamps are 8 bytes and are milliseconds since the Unix epoch.
 
 
 ## Packets
-0 - Stream
-1 - Connect
+Leading bit of Control value is set if message is encrypted.
+Bits that are not specified can be any value (zero is recommended though).
+Control:
+0 - Packet
+1 - Open
 2 - Reject
 3 - Challenge
 4 - Accept
 
 
-### Stream
+### Packet
 These are the most common packet types, so zero is used.
 
 | Octets | Field |
@@ -70,7 +73,7 @@ These are the most common packet types, so zero is used.
 | Variable | REQUESTS+
 
 
-### Connect
+### Open
 If the address+port are already in use then reject as potentially malicious,
 let a timeout cleanup the entry.
 Otherwise, create a temporary entry for the client.
@@ -83,7 +86,7 @@ correct server is being reached.
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 16 | Encrypt
+| 48 | Encrypt
 | 4 | ID for responses
 | 2 | Version ID
 | 24 | Nonce client
@@ -109,6 +112,7 @@ Rejection types are:
 2 - Overloaded with requests/connections
 3 - Invalid request
 4 - Incompatible version
+4 - No space
 
 
 ### Challenge

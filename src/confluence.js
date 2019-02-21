@@ -3,8 +3,13 @@
  * @author Craig Jacobson
  */
 /* Core */
+const EventEmitter = require('events');
 /* Community */
+const { Enum } = require('enumify');
 /* Custom */
+const crypto = require('./crypto.js');
+const { control } = require('./spec.js');
+const River = require('./river.js');
 
 
 class Trans extends Enum {}
@@ -19,14 +24,32 @@ Trans.initEnum([
   'ERROR',// Error on socket
 
   // Filtered socket messages
-  'MESSAGE',
+  'PACKET',
   'OPEN',
+  'REJECT',
+  'CHALLENGE',
+  'ACCEPT',
+  'GARBAGE',
 ]);
+
+/**
+ * @return {Trans} The transition to take.
+ */
+function controlToTransition(c) {
+  switch (c & control.MASK) {
+    case control.PACKET: return Trans.PACKET;
+    case control.OPEN: return Trans.OPEN;
+    case control.REJECT: return Trans.REJECT;
+    case control.CHALLENGE: return Trans.CHALLENGE;
+    case control.ACCEPT: return Trans.ACCEPT;
+    default: return Trans.GARBAGE;
+  }
+}
 
 class State extends Enum {}
 State.initEnum({
   CREATE: {
-    enter(client) {
+    enter(con) {
       con.map = new Map();
     },
 
@@ -63,14 +86,20 @@ State.initEnum({
        * Do preliminary screening and pass messages along as needed.
        */
       function handleMessage(message) {
-        // TODO parse out protocol and identifier
-        if (message.length >= lengths.MIN_MESSAGE && control.isValidControl(message[0])) {
+        if (message.length && control.isValidControl(message[0])) {
           const c = message[0];
-          con.state.transition(transFromControl(c), con, message);
+
+          if ((c & control.ENCRYPTED) || con.allowUnsafeMessage) {
+            con.transition(controlToTransition(message[0]), con, message);
+          }
+          else {
+            let err = new Error('Message not encrypted... dropping');
+            con.emit('error', err);
+          }
         }
         else {
           const l = message.length;
-          const c = l > 0 ? message[0] : 'undefined';
+          const c = l ? message[0] : 'undefined';
           let err = new Error('Invalid message received: length [' + l + '], control [' + c + ']');
           con.emit('error', err);
         }
@@ -98,13 +127,13 @@ State.initEnum({
       socket.bind();
     },
 
-    exit(con) {
+    exit(/* con */) {
     },
 
     transition(transType, con) {
       switch (transType) {
         case Trans.BIND:
-          con.state = State.BIND;
+          con.state = State.RUNNING;
           break;
         case Trans.CLOSE:
           {
@@ -144,7 +173,20 @@ State.initEnum({
 
     transition(transType, con, msg) {
       switch (transType) {
+        case Trans.PACKET:
+          break;
+        case Trans.OPEN:
+          break;
+        case Trans.REJECT:
+          break;
+        case Trans.CHALLENGE:
+          break;
+        case Trans.ACCEPT:
+          break;
+        case Trans.GARBAGE:
+          break;
         case Trans.CLOSE:
+          // TODO maybe rebind? Can the operating system arbitrarily unbind?
           this.isSocketClosed = true;
           con.state = State.UNBIND;
           break;
@@ -162,16 +204,24 @@ State.initEnum({
   },
 
   STOP: {
-    enter(con) {
+    enter(/* con */) {
       // TODO nice stops on all rivers
     },
 
-    exit(con) {
+    exit(/* con */) {
       // TODO hard stops on all rivers
     },
 
     transition(transType, con) {
       // TODO
+      switch (transType) {
+        default:
+          {
+            let err = new Error('Invalid transition attempt: ' + String(transType));
+            con.emit('error', err);
+          }
+          break;
+      }
     }
   },
 
@@ -185,12 +235,7 @@ State.initEnum({
       }
     },
 
-    exit(con) {
-      const socket = con.socket;
-      socket.off('error', con.handleError);
-      socket.off('message', con.handleMessage);
-      socket.off('listening', con.handleListening);
-      socket.off('close', con.handleClose);
+    exit(/* con */) {
     },
 
     transition(transType, con) {
@@ -210,6 +255,21 @@ State.initEnum({
 
   END: {
     enter(con) {
+      // Remove listeners
+      const socket = con.socket;
+      if (con.handleError) {
+        socket.off('error', con.handleError);
+      }
+      if (con.handleMessage) {
+        socket.off('message', con.handleMessage);
+      }
+      if (con.handleListening) {
+        socket.off('listening', con.handleListening);
+      }
+      if (con.handleClose) {
+        socket.off('close', con.handleClose);
+      }
+
       // Free resources
       con.map = null;
       con.socket = null;
@@ -228,10 +288,14 @@ State.initEnum({
 });
 
 class Confluence extends EventEmitter {
-  constructor(socket) {
+  constructor(socket, options) {
     super();
 
     this.socket = socket;
+
+    this.isServer = options.isServer;
+    this.allowUnsafeConnect = options.allowUnsafeConnect;
+    this.allowUnsafeMessage = options.allowUnsafeMessage;
 
     this._state = State.CREATE;
     this._state.enter(this);
@@ -312,7 +376,5 @@ class Confluence extends EventEmitter {
   }
 }
 
-module.exports = {
-  Confluence,
-};
+module.exports = Confluence;
 

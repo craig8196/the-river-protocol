@@ -3,7 +3,6 @@
  */
 /* Core */
 /* Community */
-const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
 'use strict';
@@ -37,7 +36,7 @@ const lengths = {
   MTU_MIN: 68,// Very, small. Our protocol doesn't work with link layers with this restriction.
   MTU_REC: 576,
   MTU_MAX: 1200,
-}
+};
 lengths.OPEN = 0
   + lengths.CONTROL
   + lengths.KEY;
@@ -60,23 +59,26 @@ lengths.MIN_MESSAGE = 17;
  * Control values to identify different messages.
  */
 const control = {
-  MASK:      0x07
+  MASK:      0x07,
+  ENCRYPTED: 0x80,
 
-  MESSAGE:   0x00,
+  PACKET:    0x00,
   OPEN:      0x01,
-  ACK:       0x02,
-  CONFIRM:   0x03,
-}
+  REJECT:    0x02,
+  CHALLENGE: 0x03,
+  ACCEPT:    0x04,
+};
 
-function isValidControl(c) {
-  if (0 <= c && c <= control.CONFIRM) {
+control.isValidControl = (c) => {
+  if (0 <= c && c <= control.ACCEPT) {
     return true;
   }
   else {
     return false;
   }
-}
+};
 
+/*
 function isOpen(buf) {
   return (buf.length === lengths.OPEN
           && isValidControl(buf[0]));
@@ -145,9 +147,9 @@ function unAck(out, buf, secretKey) {
   i += lengths.CURRENCY;
   let maxStreams = decrypt.readUInt16BE(i);
   i += lengths.STREAM;
-  const uuid = Buffer.allocUnsafe(length.UUID);
+  const uuid = Buffer.allocUnsafe(lengths.UUID);
   decrypt.copy(uuid, 0, i, i + lengths.UUID);
-  i += lenghts.UUID;
+  i += lengths.UUID;
   const nonce = Buffer.allocUnsafe(lengths.NONCE);
   decrypt.copy(nonce, 0, i, i + lengths.NONCE);
   i += lengths.NONCE;
@@ -202,13 +204,11 @@ function unConfirm(out, buf) {
   out.nonce = nonce;
   return true;
 }
+*/
 
 module.exports = {
   timeouts,
   lengths,
   control,
-  hardLimits,
-  softLimits,
-  message,
 };
 
