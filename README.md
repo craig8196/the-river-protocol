@@ -1,5 +1,5 @@
 
-# The River Protocol (TRPS)
+# The River Protocol (TRP)
 The River Protocol (TRP, pronounced "trip") is a way to send data faster and in larger quantities
 while managing how it is sent more sanely.
 TCP Currently suffers from certain problems, including:
@@ -9,6 +9,8 @@ TCP Currently suffers from certain problems, including:
 * No unreliable send
 * No unordered, reliable messaging
 * Persistent connections that can be hibernated
+* Heavy-weight when managing many connections to the same destination
+* Requires another protocol to send multiple messages/streams on the same connection
 
 **WARNINGS:**
 * This code is experimental and may have flaws.
@@ -180,6 +182,7 @@ UMTU: User MTU
 1. https://tools.ietf.org/html/rfc4960
 1. https://nodejs.org/api/dgram.html
 1. https://gafferongames.com/post/why_cant_i_send_udp_packets_from_a_browser/
+1. https://github.com/nodejs/node-v0.x-archive/issues/1623
 
 
 
