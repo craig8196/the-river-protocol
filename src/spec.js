@@ -22,8 +22,10 @@ const timeouts = {
 const lengths = {
   CONTROL: 1,
   NONCE: crypto.NONCE_BYTES,
-  KEY: crypto.PUBLIC_KEY_BYTES,
+  PUBLIC_KEY: crypto.PUBLIC_KEY_BYTES,
+  SECRET_KEY: crypto.SECRET_KEY_BYTES,
   EPADDING: crypto.BOX_MAC_BYTES,
+  SEAL_PADDING: crypto.SEAL_BYTES,
   UUID: 16,
   STREAM: 2,
   CURRENCY: 2,
@@ -37,9 +39,22 @@ const lengths = {
   MTU_REC: 576,
   MTU_MAX: 1200,
 };
-lengths.OPEN = 0
+// OPEN
+lengths.OPEN_DECRYPT = 0
+  + lengths.ID
+  + lengths.VERSION
+  + lengths.NONCE
+  + lengths.PUBLIC_KEY;
+lengths.OPEN_ENCRYPT = 0
+  + lengths.OPEN_DECRYPT
+  + lengths.SEAL_PADDING;
+lengths.OPEN_MIN = 0
   + lengths.CONTROL
-  + lengths.KEY;
+  + lengths.OPEN_DECRYPT;
+lengths.OPEN_MAX = 0
+  + lengths.CONTROL
+  + lengths.OPEN_ENCRYPT;
+// CHALLENGE
 lengths.ACK_DECRYPT = 0
   + lengths.CURRENCY
   + lengths.STREAM
@@ -70,15 +85,69 @@ const control = {
 };
 
 control.isValidControl = (c) => {
-  if (0 <= c && c <= control.ACCEPT) {
-    return true;
+  let valid = false;
+
+  switch (c & control.MASK) {
+    case control.PACKET:
+      valid = true;
+      break;
+    case control.OPEN:
+      valid = true;
+      break;
+    case control.REJECT:
+      valid = true;
+      break;
+    case control.CHALLENGE:
+      valid = true;
+      break;
+    case control.ACCEPT:
+      valid = true;
+      break;
+    default:
+      break;
   }
-  else {
-    return false;
-  }
+
+  return valid;
 };
 
-/*
+control.isValidPacket = (c, len, isServer, allowUnsafeConnect, allowUnsafeMessage) => {
+  let valid = false;
+  const encrypted = c & control.ENCRYPTED;
+
+  switch (c & control.MASK) {
+    case control.PACKET:
+      valid = ((len >= lengths.PACKET_MIN))
+              && (encrypted || (!encrypted && allowUnsafeMessage));
+      break;
+    case control.OPEN:
+      valid = ((encrypted && len === lengths.OPEN_ENCRYPT)
+              || (!encrypted && len === lengths.OPEN_DECRYPT))
+              && isServer
+              && (encrypted || (!encrypted && allowUnsafeConnect));
+      break;
+    case control.REJECT:
+      valid = ((encrypted && len === lengths.REJECT_ENCRYPT)
+              || (!encrypted && len === lengths.REJECT_DECRYPT))
+              && (encrypted || (!encrypted && allowUnsafeMessage));
+      break;
+    case control.CHALLENGE:
+      valid = ((encrypted && len === lengths.CHALLENGE_ENCRYPT)
+              || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
+              && (encrypted || (!encrypted && allowUnsafeMessage));
+      break;
+    case control.ACCEPT:
+      valid = ((encrypted && len === lengths.ACCEPT_ENCRYPT)
+              || (!encrypted && len === lengths.ACCEPT_DECRYPT))
+              && isServer
+              && (encrypted || (!encrypted && allowUnsafeMessage));
+      break;
+    default:
+      break;
+  }
+
+  return valid;
+};
+
 function isOpen(buf) {
   return (buf.length === lengths.OPEN
           && isValidControl(buf[0]));
@@ -89,18 +158,38 @@ function mkOpen(bufout, key) {
   key.copy(bufout, 1, 0, lengths.KEY);
 }
 
-function unOpen(out, buf) {
-  const c = buf[0];
-  if (control.OPEN !== c) {
-    return false;
+function unOpen(out, pkt, publicKey, secretKey) {
+  // Decrypt, if needed
+  let buf = pkt.slice(lengths.CONTROL);
+  if (pkt[0] & control.ENCRYPTED) {
+    let tmpbuf = Buffer.allocUnsafe(lengths.OPEN_DECRYPT);
+    if (!crypto.unseal(tmpbuf, buf, publicKey, secretKey)) {
+      return false;
+    }
+    buf = tmpbuf;
   }
 
-  const key = Buffer.allocUnsafe(lengths.KEY);
-  buf.copy(key, 0, lengths.CONRTOL, lengths.CONTROL + lengths.KEY);
-  out.key = key;
+  // Unpack
+  let offset = 0;
+  const id = Buffer.readUInt32BE(offset);
+  offset += lengths.ID;
+  const version = Buffer.readUInt16BE(offset);
+  offset += lengths.VERSION;
+  const nonce = Buffer.allocUnsafe(lengths.NONCE);
+  buf.copy(nonce, 0, offset, offset + lengths.NONCE);
+  offset += lengths.NONCE;
+  const publicKey = Buffer.allocUnsafe(lengths.PUBLIC_KEY);
+  buf.copy(publicKey, 0, offset, offset + lengths.PUBLIC_KEY);
+
+  out.id = id;
+  out.version = version;
+  out.nonce = nonce;
+  out.publicKey = publicKey;
+
   return true;
 }
 
+/*
 function isAck(buf) {
   return (buf.length === lengths.ACK
           && buf[0] === control.ACK

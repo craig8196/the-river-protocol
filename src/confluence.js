@@ -8,7 +8,7 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { control } = require('./spec.js');
+const { control, lengths } = require('./spec.js');
 const River = require('./river.js');
 
 
@@ -51,32 +51,6 @@ State.initEnum({
   CREATE: {
     enter(con) {
       con.map = new Map();
-    },
-
-    exit(/* con */) {
-    },
-
-    transition(transType, con) {
-      switch (transType) {
-        case Trans.START:
-          con.state = State.START;
-          break;
-        case Trans.STOP:
-          con.state = State.END;
-          break;
-        default:
-          {
-            let err = new Error('Invalid transition attempt: ' + String(transType));
-            con.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  START: {
-    enter(con) {
-      con.emit('start');
 
       function handleError(error) {
         con.state.transition(Trans.ERROR, con, error);
@@ -86,18 +60,24 @@ State.initEnum({
        * Do preliminary screening and pass messages along as needed.
        */
       function handleMessage(message) {
-        if (message.length && control.isValidControl(message[0])) {
+        let reportErr = true;
+
+        if (message.length >= lengths.PACKET_MIN) {
           const c = message[0];
 
-          if ((c & control.ENCRYPTED) || con.allowUnsafeMessage) {
+          if (control.isValid(c, message.length, con.isServer, con.allowUnsafeConnect, con.allowUnsafeMessage)) {
+            if (c & control.ENCRYPTED) {
+              message.encrypted = true;
+            }
+            else {
+              message.encrypted = false;
+            }
             con.transition(controlToTransition(message[0]), con, message);
-          }
-          else {
-            let err = new Error('Message not encrypted... dropping');
-            con.emit('error', err);
+            reportErr = false;
           }
         }
-        else {
+
+        if (reportErr) {
           const l = message.length;
           const c = l ? message[0] : 'undefined';
           let err = new Error('Invalid message received: length [' + l + '], control [' + c + ']');
@@ -124,7 +104,33 @@ State.initEnum({
       socket.on('message', handleMessage);
       socket.on('listening', handleListening);
       socket.on('close', handleClose);
-      socket.bind();
+    },
+
+    exit(/* con */) {
+    },
+
+    transition(transType, con) {
+      switch (transType) {
+        case Trans.START:
+          con.state = State.START;
+          break;
+        case Trans.STOP:
+          con.state = State.END;
+          break;
+        default:
+          {
+            let err = new Error('Invalid transition attempt: ' + String(transType));
+            con.emit('error', err);
+          }
+          break;
+      }
+    }
+  },
+
+  START: {
+    enter(con) {
+      con.emit('start');
+      con.socket.bind();
     },
 
     exit(/* con */) {
@@ -133,7 +139,7 @@ State.initEnum({
     transition(transType, con) {
       switch (transType) {
         case Trans.BIND:
-          con.state = State.RUNNING;
+          con.state = State.LISTENING;
           break;
         case Trans.CLOSE:
           {
@@ -162,10 +168,10 @@ State.initEnum({
     }
   },
 
-  RUNNING: {
+  LISTENING: {
     enter(con) {
       const socket = con.socket;
-      con.emit('running', { port: socket.port, address: socket.address });
+      con.emit('listening', { port: socket.port, address: socket.address });
     },
 
     exit(/* con */) {
@@ -174,25 +180,91 @@ State.initEnum({
     transition(transType, con, msg) {
       switch (transType) {
         case Trans.PACKET:
+        case Trans.REJECT:
+        case Trans.CHALLENGE:
+        case Trans.ACCEPT:
+          {
+            let offset = lengths.CONTROL;
+            const id = msg.readUInt32BE(offset);
+            const river = con.getId(id);
+
+            if (river) {
+              offset += lengths.ID;
+              const buf = msg.slice(offset);
+              buf.encrypted = msg.encrypted;
+              river.transition(transType, river, buf);
+            }
+            else {
+              let err = new Error('Packet for non-existent connection: ' + id);
+              con.emit('error', err);
+            }
+          }
           break;
         case Trans.OPEN:
-          break;
-        case Trans.REJECT:
-          break;
-        case Trans.CHALLENGE:
-          break;
-        case Trans.ACCEPT:
-          break;
-        case Trans.GARBAGE:
+          {
+            const info = {};
+            if (control.unOpen(info, msg)) {
+              // TODO OPEN a new connection/river
+            }
+            else {
+              let err = new Error('Invalid OPEN request');
+              con.emit('error', err);
+            }
+          }
           break;
         case Trans.CLOSE:
-          // TODO maybe rebind? Can the operating system arbitrarily unbind?
-          this.isSocketClosed = true;
-          con.state = State.UNBIND;
-          break;
-        case Trans.STOP:
+          con.isSocketClosed = true;
           con.state = State.STOP;
           break;
+        case Trans.STOP:
+          con.state = State.DISCONNECT;
+          break;
+        default:
+          {
+            let err = new Error('Invalid transition attempt: ' + String(transType));
+            con.emit('error', err);
+          }
+          break;
+      }
+    }
+  },
+
+  DISCONNECT: {
+    enter(con) {
+      function signalDisconnect (river/* , id, map */) {
+        river.close();
+      }
+
+      function handleDisconnectTimeout(con) {
+        delete con.disconnectTimeout;
+        con.state = State.STOP;
+      }
+
+      if (con.isSocketClosed) {
+        con.state = State.STOP;
+      }
+      else {
+        con.map.forEach(signalDisconnect);
+        con.disconnectTimeoutMs = 5000;
+        con.disonnectTimeout = setTimeout(handleDisconnectTimeout, con.disconnectTimeoutMs, con);
+      }
+    },
+
+    exit(con) {
+      function forceDisconnect (river/* , id, map */) {
+        river.hardClose();
+      }
+
+      if (con.disconnectTimeout) {
+        clearTimeout(con.disconnectTimeout);
+        delete con.disconnectTimeout;
+      }
+
+      con.map.forEach(forceDisconnect);
+    },
+
+    transition(transType, con) {
+      switch (transType) {
         default:
           {
             let err = new Error('Invalid transition attempt: ' + String(transType));
@@ -204,28 +276,6 @@ State.initEnum({
   },
 
   STOP: {
-    enter(/* con */) {
-      // TODO nice stops on all rivers
-    },
-
-    exit(/* con */) {
-      // TODO hard stops on all rivers
-    },
-
-    transition(transType, con) {
-      // TODO
-      switch (transType) {
-        default:
-          {
-            let err = new Error('Invalid transition attempt: ' + String(transType));
-            con.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  UNBIND: {
     enter(con) {
       if (!con.isSocketClosed) {
         con.socket.close();

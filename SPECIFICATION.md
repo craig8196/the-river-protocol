@@ -50,26 +50,26 @@ Counters should be reset on each ping? Or some reasonable interval.
 Timestamps are 8 bytes and are milliseconds since the Unix epoch.
 
 
-## Packets
+## Packet Types
 Leading bit of Control value is set if message is encrypted.
 Bits that are not specified can be any value (zero is recommended though).
 Control:
-0 - Packet
+0 - Stream
 1 - Open
 2 - Reject
 3 - Challenge
 4 - Accept
 
 
-### Packet
+### Stream
 These are the most common packet types, so zero is used.
 
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
 | 4 | ID
+| 4 | Sequence
 | 16 | Encrypt
-| 8 | Milliseconds timestamp
 | Variable | REQUESTS+
 
 
@@ -101,18 +101,21 @@ Options for ignoring connections that may be malicious should be provided.
 |:------ |:----- |
 | 1 | Control
 | 4 | ID
+| 4 | Sequence
 | 16 | Encrypt
 | 1 | Stream control byte (0xFF)
 | 2 | Rejection type
-| 24 | Nonce as token
+| 24 | Random data
 
 Rejection types are:
-0 - Unknown
+0 - Unknown/Other
 1 - Whitelist
 2 - Overloaded with requests/connections
 3 - Invalid request
 4 - Incompatible version
-4 - No space
+5 - No space
+6 - User reject
+7 - Server error
 
 
 ### Challenge
