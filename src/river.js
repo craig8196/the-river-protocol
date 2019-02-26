@@ -9,7 +9,7 @@ const { Enum } = require('enumify');
 /* Custom */
 const { StreamManager } = require('./stream.js');
 const spec = require('./spec.js');
-const crypt = require('./crypt.js');
+const crypto = require('./crypto.js');
 const util = require('./util.js');
 'use strict';
 

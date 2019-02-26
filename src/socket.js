@@ -52,12 +52,12 @@ class UdpSender extends SenderInterface {
 }
 
 class UdpSocket extends SocketInterface {
-  constructor(udpType, options) {
+  constructor(udpType, port, address) {
     super();
 
     this.socket = dgram.createSocket(udpType);
-    this.address = options.address;
-    this.port = options.port;
+    this.port = port;
+    this.address = address;
   }
 
   on() {
@@ -79,16 +79,22 @@ class UdpSocket extends SocketInterface {
 
 /**
  * Creates a socket using for the protocol.
- * @param {Object} options - Optional.
- * @param {string} options.port - Optional. The port to bind to, random if not specified.
- * @param {string} options.address - Optional. The address to bind to, all if not specified.
+ * @param {string} Address to be parsed and processed into a socket type.
  * @return
  */
 function mkSocket(options) {
   let socket_type = 'udp4';
 
+  if (!options) {
+    options = {};
+  }
+
   if (options.address) {
-    if ('localhost' === options.address || isIp.v4(options.address)) {
+    if ('localhost' === options.address) {
+      options.address = undefined;
+      socket_type = 'udp4';
+    }
+    else if (isIp.v4(options.address)) {
       socket_type = 'udp4';
     }
     else if (isIp.v6(options.address)) {
@@ -102,7 +108,7 @@ function mkSocket(options) {
     }
   }
   else {
-    options.address = 'localhost';
+    options.address = undefined;
   }
 
   if (options.port) {
@@ -113,7 +119,7 @@ function mkSocket(options) {
 
 
   if (socket_type !== 'local') {
-    return new UdpSocket(socket_type, options);
+    return new UdpSocket(socket_type, options.port, options.address);
   }
   else {
     throw new Error('UDS support not available yet.');
