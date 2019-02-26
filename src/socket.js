@@ -79,7 +79,9 @@ class UdpSocket extends SocketInterface {
 
 /**
  * Creates a socket using for the protocol.
- * @param {string} Address to be parsed and processed into a socket type.
+ * @param {Object} options - Optional.
+ * @param {string} options.port - Optional. The port to bind to, random if not specified.
+ * @param {string} options.address - Optional. The address to bind to, all if not specified.
  * @return
  */
 function mkSocket(options) {
