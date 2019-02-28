@@ -24,7 +24,8 @@
     "enumify": "^1.0.4",
     "is-ip": "^2.0.0",
     "is-valid-path": "^0.1.1",
-    "sodium-native": "^2.2.6",
+    "long": "^4.0.0",
+    "sodium-native": "^2.2.6"
   },
   "devDependencies": {
     "eslint": "^5.13.0",

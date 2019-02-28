@@ -5,6 +5,20 @@
 The following is the protocol specification.
 
 
+## Definitions
+**packet:** Raw data transmitted, not including return information.
+**rinfo:** Return information.
+**socket:** Interface to sending/receiving packet information.
+**sender:** Context for sending to specific destination using a socket.
+**confluence:** Manager of rivers. Serializes/deserializes, encrypts/decrypts, and validates packets.
+**river:** Individual connection between confluences.
+**stream:** Unidirectional messaging context.
+**message:** Unit of data in a stream. Don't confuse with 'message' from dgram event.
+**fragment:** Part of a message.
+**client:** Simple wrapper for managing a single connection.
+**server:** Simple wrapper for managing the classic server approach.
+
+
 ## Congestion Control
 Even with low levels of data transmission there should be congestion control.
 Different quantities of transmission may take different methods of control.
@@ -52,7 +66,7 @@ Timestamps are 8 bytes and are milliseconds since the Unix epoch.
 
 ## Packet Types
 Leading bit of Control value is set if message is encrypted.
-Bits that are not specified can be any value (zero is recommended though).
+Bits that are not specified must be zero and are reserved for future use.
 Control:
 0 - Stream
 1 - Open
@@ -82,12 +96,18 @@ timeouts;
 if extreme cullings are taking place then errors will be emitted.
 The packet is sealed with the servers public key, this helps ensure that the
 correct server is being reached.
+The ID for responses is done because the client may be juggling multiple
+connections on the same port.
+The timestamp is to help prevent packet replay, if the timestamp of the original
+connection is significantly less than the current time, then we're experiencing
+packet replay and they should be dropped without a second thought.
 
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
 | 48 | Encrypt
 | 4 | ID for responses
+| 8 | Timestamp
 | 2 | Version ID
 | 24 | Nonce client
 | 32 | Public key client

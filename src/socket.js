@@ -26,6 +26,10 @@ class SocketInterface {
   bind() {
     throw new Error('bind unimplemented');
   }
+
+  mkSender() {
+    throw new Error('mkSender unimplemented');
+  }
 }
 
 class SenderInterface {
@@ -55,6 +59,7 @@ class UdpSocket extends SocketInterface {
   constructor(udpType, port, address) {
     super();
 
+    this.udpType = udpType;
     this.socket = dgram.createSocket(udpType);
     this.port = port;
     this.address = address;
@@ -72,17 +77,17 @@ class UdpSocket extends SocketInterface {
     this.socket.bind({ exclusive: true, port: this.port, address: this.address }, cb);
   }
 
-  mkSender(port, address) {
-    return new UdpSender(this.socket, port, address);
+  mkSender(dest) {
+    return new UdpSender(this.socket, dest.port, dest.address);
   }
 }
 
 /**
  * Creates a socket using for the protocol.
  * @param {Object} options - Optional.
- * @param {string} options.port - Optional. The port to bind to, random if not specified.
+ * @param {number} options.port - Optional. The port to bind to, random if not specified.
  * @param {string} options.address - Optional. The address to bind to, all if not specified.
- * @return
+ * @return A new socket wrapper ready to be used by the framework.
  */
 function mkSocket(options) {
   let socket_type = 'udp4';

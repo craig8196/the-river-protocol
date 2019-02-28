@@ -1,5 +1,5 @@
 /**
- * @file Confluence creation.
+ * @file Confluence manages each connection.
  * @author Craig Jacobson
  */
 /* Core */
@@ -8,43 +8,9 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { control, lengths } = require('./spec.js');
+const { Trans, control, lengths } = require('./spec.js');
 const River = require('./river.js');
 
-
-class Trans extends Enum {}
-Trans.initEnum([
-  // Client events
-  'START',// Start on client was called
-  'STOP',// Stop on client was called
-
-  // Socket events
-  'BIND',// Successful bind/listening on socket
-  'CLOSE',// Close socket was received
-  'ERROR',// Error on socket
-
-  // Filtered socket messages
-  'PACKET',
-  'OPEN',
-  'REJECT',
-  'CHALLENGE',
-  'ACCEPT',
-  'GARBAGE',
-]);
-
-/**
- * @return {Trans} The transition to take.
- */
-function controlToTransition(c) {
-  switch (c & control.MASK) {
-    case control.PACKET: return Trans.PACKET;
-    case control.OPEN: return Trans.OPEN;
-    case control.REJECT: return Trans.REJECT;
-    case control.CHALLENGE: return Trans.CHALLENGE;
-    case control.ACCEPT: return Trans.ACCEPT;
-    default: return Trans.GARBAGE;
-  }
-}
 
 class State extends Enum {}
 State.initEnum({
@@ -59,30 +25,9 @@ State.initEnum({
       /**
        * Do preliminary screening and pass messages along as needed.
        */
-      function handleMessage(message) {
-        let reportErr = true;
-
-        if (message.length >= lengths.PACKET_MIN) {
-          const c = message[0];
-
-          if (control.isValid(c, message.length, con.isServer, con.allowUnsafeConnect, con.allowUnsafeMessage)) {
-            if (c & control.ENCRYPTED) {
-              message.encrypted = true;
-            }
-            else {
-              message.encrypted = false;
-            }
-            con.transition(controlToTransition(message[0]), con, message);
-            reportErr = false;
-          }
-        }
-
-        if (reportErr) {
-          const l = message.length;
-          const c = l ? message[0] : 'undefined';
-          let err = new Error('Invalid message received: length [' + l + '], control [' + c + ']');
-          con.emit('error', err);
-        }
+      function handleMessage(message, rinfo) {
+        const eventData = { message: message, rinfo: rinfo };
+        con.state.transition(Trans.PACKET, con, eventData);
       }
 
       function handleListening() {
@@ -139,11 +84,11 @@ State.initEnum({
     transition(transType, con) {
       switch (transType) {
         case Trans.BIND:
-          con.state = State.LISTENING;
+          con.state = State.LISTEN;
           break;
         case Trans.CLOSE:
           {
-            let err = new Error('Socket closed when expecting socket bind.');
+            let err = new Error('Socket closed when expecting socket bind');
             con.emit('error', err);
             con.state = State.END;
           }
@@ -168,21 +113,20 @@ State.initEnum({
     }
   },
 
-  LISTENING: {
+  LISTEN: {
     enter(con) {
       const socket = con.socket;
-      con.emit('listening', { port: socket.port, address: socket.address });
+      con.emit('listen', { port: socket.port, address: socket.address });
     },
 
     exit(/* con */) {
     },
 
-    transition(transType, con, msg) {
+    transition(transType, con, msg, rinfo) {
       switch (transType) {
         case Trans.PACKET:
-        case Trans.REJECT:
-        case Trans.CHALLENGE:
-        case Trans.ACCEPT:
+          break;
+          /*
           {
             let offset = lengths.CONTROL;
             const id = msg.readUInt32BE(offset);
@@ -198,13 +142,31 @@ State.initEnum({
               let err = new Error('Packet for non-existent connection: ' + id);
               con.emit('error', err);
             }
+            */
           }
           break;
         case Trans.OPEN:
           {
             const info = {};
             if (control.unOpen(info, msg)) {
-              // TODO OPEN a new connection/river
+              if (!con.hasConnection(rinfo, info.id)) {
+                const id = con.newId();
+                const sender = con.socket.mkSender(rinfo);
+                const river = new River(id, sender);
+
+                function keep() {
+                  river.challenge();
+                }
+
+                function kill() {
+                  river.reject();
+                }
+
+                con.emit('connect', river, keep, kill);
+              }
+              else {
+                // TODO reject
+              }
             }
             else {
               let err = new Error('Invalid OPEN request');
@@ -337,15 +299,26 @@ State.initEnum({
   },
 });
 
+/**
+ * Confluence is a junction or meeting of rivers, thus managing 
+ * multiple connections.
+ * Block OPEN requests if needed.
+ * Filter and drop non-protocol adhereing dgrams.
+ * Check and update messages.
+ * Validate incoming messages.
+ * Decrypt and unwrap incoming messages.
+ * Forward message data to the correct connection.
+ * Wrap and encrypt outgoing messages accordingly.
+ */
 class Confluence extends EventEmitter {
   constructor(socket, options) {
     super();
 
     this.socket = socket;
 
-    this.isServer = options.isServer;
-    this.allowUnsafeConnect = options.allowUnsafeConnect;
-    this.allowUnsafeMessage = options.allowUnsafeMessage;
+    this.allowIncoming = options.allowIncoming;
+    this.allowUnsafeOpen = options.allowUnsafeOpen;
+    this.allowUnsafePacket = options.allowUnsafePacket;
 
     this._state = State.CREATE;
     this._state.enter(this);
@@ -365,12 +338,34 @@ class Confluence extends EventEmitter {
     this._state.enter(this);
   }
 
+  newId() {
+    let id = crypto.mkId();
+    let count = 1;
+    const maxTry = 30;
+    while (id === 0 || con.hasId(id)) {
+      if (maxTry === count) {
+        return 0;
+      }
+      id = crypto.mkId();
+      ++count;
+    }
+    return id;
+  }
+
   hasId(id) {
     return this.map.has(id);
   }
 
   getId(id) {
-    return this.map.get(id);
+    const river = this.map.get(id);
+    if (river) {
+      return river;
+    }
+    else {
+      // TODO return the prepared river object
+      // TODO create default/dummy rejection river objects for different situations
+      return null;
+    }
   }
 
   setId(id, river) {
@@ -378,6 +373,7 @@ class Confluence extends EventEmitter {
       this.map.set(id, river);
     }
     else {
+      // TODO create a new river context rather than error dummy?
       this.map.delete(id);
     }
   }
@@ -390,36 +386,42 @@ class Confluence extends EventEmitter {
     this.state.transition(Trans.STOP, this);
   }
 
-  openConnection(dest) {
+  createRiver(info, rinfo) {
+  }
+
+  /**
+   * Attempts to create a new connection over the socket.
+   * @param {Object} dest - The destination description.
+   * @param {number} dest.port - Required. The destination port.
+   * @param {string} dest.address - Required. The destination address.
+   * @return A promise that will either return a connection or an error.
+   */
+  mkConnection(dest, publicKey, options) {
     // Internally the connection is called a river, but these details don't
     // need to be known to the user
     const con = this;
 
     const promise = new Promise((resolve, reject) => {
-      let id = crypto.mkId();
-      let count = 1;
-      const maxTry = 30;
-      while (id === 0 || con.hasId(id)) {
-        if (count === maxTry) {
-          reject(new Error('Unable to create a unique id.'));
-          break;
-        }
-        id = crypto.mkId();
-        ++count;
-      }
-
-      if (id !== 0 && !con.hasId(id)) {
+      const id = con.newId();
+      if (id) {
         dest.socket = con.socket;
-        const river = new River(id, dest);
-        con.setId(id, river);
-        river.on('connected', () => {
-          resolve(river);
-        });
-        river.on('error', (err) => {
-          con.setId(id, null);
+        try {
+          const sender = con.socket.mkSender(dest);
+          const river = new River(id, sender);
+          river.setOpenPublicKey(publicKey);
+          con.setId(id, river);
+          river.on('connected', () => {
+            resolve(river);
+          });
+          river.on('error', (err) => {
+            con.setId(id, null);
+            reject(err);
+          });
+          river.open();
+        }
+        catch (err) {
           reject(err);
-        });
-        river.open();
+        }
       }
     });
     return promise;

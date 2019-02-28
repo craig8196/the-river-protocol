@@ -31,8 +31,8 @@ Trans.initEnum([
   // Filtered socket messages.
   'MESSAGE',
   'OPEN',
-  'ACK',
-  'CONFIRM',
+  'REJECT',
+  '',
   'DISCONNECT',
 ]);
 
@@ -538,6 +538,35 @@ State.initEnum({
 
 
 class River extends EventEmitter {
+  constructor(id, sender) {
+    super();
+
+    this.id = id;
+    this.sender = sender;
+    this._state = State.CREATE;
+  }
+
+  get state() {
+    return this._state;
+  }
+
+  set state(s) {
+    if (s === this._state) {
+      let err = new Error('Transitioning to same state: ' + String(s));
+      this.emit('error', err);
+    }
+    this._state.exit(this);
+    this._state = s;
+    this._state.enter(this);
+  }
+
+  open() {
+    this.state.transition(Trans.OPEN, this);
+  }
+}
+
+/*
+class River extends EventEmitter {
   constructor(socket) {
     super();
 
@@ -581,6 +610,7 @@ class River extends EventEmitter {
     return this.streams.openStream();
   }
 }
+*/
 
 module.exports = {
   River,

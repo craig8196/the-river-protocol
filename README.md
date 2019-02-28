@@ -2,7 +2,8 @@
 # The River Protocol (TRP)
 The River Protocol (TRP, pronounced "trip") is a way to send data faster and in larger quantities
 while managing how it is sent more sanely.
-TCP Currently suffers from certain problems, including:
+
+TCP Currently suffers from:
 * No security by default
 * Difficult to implement security
 * Slow handshake when doing security (one for the connection, one for encryption)
@@ -13,8 +14,21 @@ TCP Currently suffers from certain problems, including:
 * Heavy-weight when managing many connections to the same destination
 * Requires another protocol to send multiple messages/streams on the same connection
 
+UDP suffers from:
+* Unreliability
+* No encryption
+* Packet replay attacks
+* Spoofing
+* Difficulty in sending large messages/packets
+* Connectionless
+
+TRP suffers from:
+* Yeah, you still need another protocol on top
+
 **WARNINGS:**
 * This code is experimental and may have flaws.
+* I'm starting to think that my structures are too deeply nested;
+  but it may be worth it to provide proper programming abstractions.
 * I know state machines can be ugly, but it's how I kept my sanity.
 * Currently in pre-release and will not follow semantic versioning until release v1.0.0.
 * The original author is not a security expert.
