@@ -10,8 +10,8 @@ The following is the protocol specification.
 **rinfo:** Return information.
 **socket:** Interface to sending/receiving packet information.
 **sender:** Context for sending to specific destination using a socket.
-**confluence:** Manager of rivers. Serializes/deserializes, encrypts/decrypts, and validates packets.
-**river:** Individual connection between confluences.
+**router:** Basic packet validation and routing to connections.
+**connection:** Individual connection between routers.
 **stream:** Unidirectional messaging context.
 **message:** Unit of data in a stream. Don't confuse with 'message' from dgram event.
 **fragment:** Part of a message.
@@ -73,6 +73,7 @@ Control:
 2 - Reject
 3 - Challenge
 4 - Accept
+5 - Ping
 
 
 ### Stream
@@ -105,10 +106,14 @@ packet replay and they should be dropped without a second thought.
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
+| 4 | Zeros
+| 4 | Sequence
 | 48 | Encrypt
 | 4 | ID for responses
 | 8 | Timestamp
 | 2 | Version ID
+| 2 | Max streams
+| 2 | Initial currency
 | 24 | Nonce client
 | 32 | Public key client
 
@@ -146,10 +151,13 @@ Return the server's nonce and public key.
 |:------ |:----- |
 | 1 | Control
 | 4 | ID
-| 16 | Encrypt
+| 4 | Sequence
+| 48 | Encrypt
+| 4 | ID for requests
+| 8 | Timestamp
+| 2 | Version
 | 2 | Max streams
 | 2 | Initial currency
-| 4 | ID for requests
 | 24 | Nonce server
 | 32 | Public key server
 
@@ -163,10 +171,15 @@ The client cannot have lower limitations than the server.
 |:------ |:----- |
 | 1 | Control
 | 4 | ID
+| 4 | Sequence
 | 16 | Encrypt
 | 2 | Max streams
 | 2 | Initial currency
 | 24 | Nonce again for confirmation
+
+
+### Ping
+TODO
 
 
 ## Stream Protocol
