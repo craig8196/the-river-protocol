@@ -3,11 +3,12 @@
  * @author Craig Jacobson
  */
 /* Core */
+const EventEmitter = require('events');
 /* Community */
 /* Custom */
 const { mkKeyPair } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
-const Router = require('./router.js');
+//const Router = require('./router.js');
 'use strict';
 
 
@@ -18,7 +19,7 @@ class Server extends EventEmitter {
   constructor(socket, options) {
     super();
 
-    this.router = new Router(socket, options);
+    //this.router = new Router(socket, options);
   }
   
   start() {
@@ -44,7 +45,7 @@ class Client extends EventEmitter {
   constructor(socket, options) {
     super();
 
-    this.router = new Router(socket, options);
+    //this.router = new Router(socket, options);
     this.conn = null;
   }
 
@@ -82,6 +83,6 @@ module.exports = {
   // Low-level API for Customization
   SocketInterface,
   SenderInterface,
-  Router,
+  //Router,
 };
 
