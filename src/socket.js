@@ -41,6 +41,10 @@ class SenderInterface {
   }
 }
 
+/**
+ * Wrapper that abstracts the sending process so underlying details don't
+ * need to be known by the protocol.
+ */
 class UdpSender extends SenderInterface {
   constructor(socket, port, address) {
     super();
@@ -50,35 +54,79 @@ class UdpSender extends SenderInterface {
     this.address = address;
   }
 
+  /**
+   * Send the buffer as a packet to the destination.
+   * @param {Buffer|[Buffer]} msg - The buffer/buffers that comprise the packet.
+   * @param {Function} cb - Called when the data was sent so the buffer can be reused.
+   */
   send(msg, cb) {
     this.socket.send(msg, this.port, this.address, cb);
   }
 }
 
+/**
+ * Wrapper around the UDP socket to normalize socket use so this protocol
+ * can be extended to communicate over other mediums.
+ */
 class UdpSocket extends SocketInterface {
   constructor(udpType, port, address) {
     super();
 
-    this.udpType = udpType;
-    this.socket = dgram.createSocket(udpType);
-    this.port = port;
-    this.address = address;
+    this._udpType = udpType;
+    this._socket = dgram.createSocket(udpType);
+    this._port = port;
+    this._address = address;
   }
 
+  /**
+   * Forward event listening to the underlying socket.
+   */
   on() {
-    this.socket.on.apply(this.socket, arguments);
+    this._socket.on.apply(this._socket, arguments);
   }
   
+  /**
+   * Remove event listening from the underlying socket.
+   */
   off() {
-    this.socket.off.apply(this.socket, arguments);
-  }
-  
-  bind(cb) {
-    this.socket.bind({ exclusive: true, port: this.port, address: this.address }, cb);
+    this._socket.off.apply(this._socket, arguments);
   }
 
-  mkSender(dest) {
-    return new UdpSender(this.socket, dest.port, dest.address);
+  /**
+   * Get the underlying socket object.
+   */
+  socket() {
+    return this._socket;
+  }
+
+  /**
+   * Get the address.
+   * @return {string} Address in the format 'address:port'.
+   */
+  address() {
+    const addr = this._socket.address();
+    return addr.address + ':' + String(addr.port);
+  }
+  
+  /**
+   * Generic bind call. This is so other socket types with different binding
+   * can be used.
+   * @param {Function} cb - The callback indicating success or failure.
+   */
+  bind(cb) {
+    this._socket.bind({ exclusive: true, port: this._port, address: this._address }, cb);
+  }
+
+  /**
+   * Since different sockets support different sending options this is a generic
+   * way to pass through the specific options.
+   * @param {Object} options - Location to send data.
+   * @param {string} options.address - The IP or domain to connect to.
+   * @param {number} options.port - The port to connect to.
+   * @return {SenderInterface} The interface used to send data.
+   */
+  mkSender(options) {
+    return new UdpSender(this._socket, options.port, options.address);
   }
 }
 
