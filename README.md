@@ -172,9 +172,10 @@ EMTU: Effective MTU
 ICE: Interactive Connectivity Establishment
 ICMP: Internet Control Message Protocol
 PLPMTUD: Packetization Layer Path MTU Discovery
-MMS: Maximum message size.
+MMS: Maximum Message Size
 MTU: Maximum Transmission Unit
 NAT: Network Address Translation
+RTT: Round Trip Time
 TCP: Transmission Control Protocol
 UDP: User Datagram Protocol
 UMMS: User MMS
