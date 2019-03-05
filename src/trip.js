@@ -8,7 +8,7 @@ const EventEmitter = require('events');
 /* Custom */
 const { mkKeyPair } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
-//const Router = require('./router.js');
+const { mkRouter } = require('./router.js');
 'use strict';
 
 
@@ -19,7 +19,7 @@ class Server extends EventEmitter {
   constructor(socket, options) {
     super();
 
-    //this.router = new Router(socket, options);
+    this.router = mkRouter(socket, options);
   }
   
   start() {
@@ -33,7 +33,12 @@ class Server extends EventEmitter {
   }
 }
 
+/**
+ * Create a server object.
+ */
 function mkServer(socket, options) {
+  options.allowIncoming = true;
+  options.allowOutgoing = false;
   return new Server(socket, options);
 }
 
@@ -83,6 +88,6 @@ module.exports = {
   // Low-level API for Customization
   SocketInterface,
   SenderInterface,
-  //Router,
+  mkRouter,
 };
 

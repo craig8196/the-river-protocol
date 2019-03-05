@@ -112,8 +112,6 @@ packet replay and they should be dropped without a second thought.
 | 4 | ID for responses
 | 8 | Timestamp
 | 2 | Version ID
-| 2 | Max streams
-| 2 | Initial currency
 | 24 | Nonce client
 | 32 | Public key client
 
@@ -127,10 +125,10 @@ Options for ignoring connections that may be malicious should be provided.
 | 1 | Control
 | 4 | ID
 | 4 | Sequence
-| 16 | Encrypt
-| 1 | Stream control byte (0xFF)
+| 48 | Encrypt
+| 8 | Timestamp
 | 2 | Rejection type
-| 24 | Random data
+| V | Message
 
 Rejection types are:
 0 - Unknown/Other
@@ -138,9 +136,8 @@ Rejection types are:
 2 - Overloaded with requests/connections
 3 - Invalid request
 4 - Incompatible version
-5 - No space
-6 - User reject
-7 - Server error
+5 - User reject
+6 - Server error
 
 
 ### Challenge
@@ -160,6 +157,7 @@ Return the server's nonce and public key.
 | 2 | Initial currency
 | 24 | Nonce server
 | 32 | Public key server
+| 24 | Accept token (nonce)
 
 
 ### Accept
@@ -174,7 +172,7 @@ The client cannot have lower limitations than the server.
 | 4 | Sequence
 | 16 | Encrypt
 | 2 | Max streams
-| 2 | Initial currency
+| 2 | Max currency
 | 24 | Nonce again for confirmation
 
 

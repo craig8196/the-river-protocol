@@ -153,7 +153,7 @@ State.initEnum({
                 if (((encrypted && len === lengths.OPEN_ENCRYPT)
                     || (!encrypted && len === lengths.OPEN_DECRYPT))
                     && router.allowIncoming
-                    && (encrypted || router.allowUnsafeConnect))
+                    && (encrypted || router.allowUnsafeOpen))
                 {
                   if (control.unOpen()) {
                     t = Trans.OPEN;
@@ -368,7 +368,9 @@ class Router extends EventEmitter {
 
     this.socket = socket;
 
+    this.keys = options.keys;
     this.allowIncoming = options.allowIncoming;
+    this.allowOutgoing = options.allowOutgoing;
     this.allowUnsafeOpen = options.allowUnsafeOpen;
     this.allowUnsafePacket = options.allowUnsafePacket;
 
@@ -490,5 +492,23 @@ class Router extends EventEmitter {
   }
 }
 
-module.exports = Router;
+function mkRouter(socket, options) {
+  options.allowIncoming =
+    'allowIncoming' in options ? (!!options.allowIncoming) : false;
+  options.allowOutgoing =
+    'allowOutgoing' in options ? (!!options.allowOutgoing) : false;
+  options.allowUnsafeOpen =
+    'allowUnsafeOpen' in options ? (!!options.allowUnsafeOpen) : false;
+  options.allowUnsafePacket =
+    'allowUnsafePacket' in options ? (!! options.allowUnsafePacket) : false;
+  if (!options.keys) {
+    options.keys = crypto.mkKeyPair();
+  }
+  return new Router(socket, options);
+}
+
+module.exports = {
+  Router,
+  mkRouter,
+};
 

@@ -94,7 +94,7 @@ Note that servers may impose additional restrictions, these are just the default
 * Max open streams per open connection:  (2**16) - 1
 * Max messages per open ordered stream: (2**32) - 1
 * Max outstanding fragments per open connection: (2**16) - 1
-* Minimum UMTU: 576 - 60 - 8 - 1 - 4 - 16
+* Minimum UMTU: 576 - 20 - 8 - 1 - 4 - 4 - 16 - 1 - 2 - 4 - 2 - 2
 * Maximum message size: 255 * UMTU
 * Min/Max ping: 15/300 seconds.
 

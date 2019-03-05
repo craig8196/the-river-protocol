@@ -13,115 +13,187 @@ const shared = require('./shared.js');
 'use strict';
 
 
-function mkStream() {
-}
+function mkPrefix(buf, encrypted, c, id, sequence) {
+  if (buf.length < lengths.PACKET_PREFIX) {
+    return 0;
+  }
 
-function unStream() {
-}
-
-function mkOpen(peerId, sequence,
-  publicKeyOpen,
-  id, timestamp, version, maxStreams, maxCurrency,
-  nonce, publicKey)
-{
-  let packetPrefix = Buffer.allocUnsafe(lengths.PACKET_PREFIX);
-  if (publicKeyOpen) {
-    packetPrefix[0] = control.OPEN | control.ENCRYPTED;
+  let offset = 0;
+  if (encrypted) {
+    buf[0] = c | control.ENCRYPTED;
   }
   else {
-    packetPrefix[0] = control.OPEN;
+    buf[0] = c;
   }
-  let offset = lengths.CONTROL;
-  packetPrefix.writeUInt32BE(peerId, offset);
-  offset += lengths.ID;
-  packetPrefix.writeUInt32BE(sequence, offset);
 
-  let buf = Buffer.allocUnsafe(lengths.OPEN_DECRYPT);
-  offset = 0;
+  offset += lengths.CONTROL;
   buf.writeUInt32BE(id, offset);
   offset += lengths.ID;
-  timestamp.copy(buf, offset, 0, lengths.TIMESTAMP);
-  offset += lengths.TIMESTAMP;
+  buf.writeUInt32BE(sequence, offset);
+  offset += lengths.ID;
+
+  return offset;
+}
+
+function unPrefix(out, buf) {
+  if (buf.length < lengths.PACKET_PREFIX) {
+    return false;
+  }
+
+  out.encrypted = buf[0] & control.ENCRYPTED ? true : false;
+  out.c = buf[0] & control.MASK;
+  let offset = lengths.CONTROL;
+  out.id = readUInt32BE(offset);
+  offset += lengths.ID;
+  out.sequence = readUInt32BE(offset);
+
+  return true;
+}
+
+/**
+ * Create the OPEN message buffer.
+ * @return {[Buffer]} 
+ */
+function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
+  if (buf.length < lengths.OPEN_DECRYPT) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(id, offset);
+  offset += lengths.ID;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
   buf.writeUInt16BE(version, offset);
   offset += lengths.VERSION;
-  buf.writeUInt16BE(maxStreams, offset);
-  offset += lengths.MAX_STREAMS;
-  buf.writeUInt16BE(maxCurrency, offset);
-  offset += lengths.MAX_CURRRENCY;
   nonce.copy(buf, offset, 0, lengths.NONCE);
   offset += lengths.NONCE;
   publicKey.copy(buf, offset, 0, lengths.PUBLIC_KEY);
+  offset += lengths.PUBLIC_KEY;
 
-  if (publicKeyOpen) {
-    let ebuf = Buffer.allocUnsafe(lengths.OPEN_ENCRYPT);
-    if (!crypto.seal(ebuf, buf, publicKeyOpen)) {
-      return null;
-    }
-    buf = ebuf;
-  }
-
-  return [packetPrefix, buf];
+  return offset;
 }
 
 /**
  * @return {boolean} True if successful, false otherwise.
  */
-function unOpen(out, buf, publicKey, secretKey) {
-  if (buf.length === lengths.OPEN_ENCRYPT) {
-    let unbuf = Buffer.allocUnsafe(lengths.OPEN_DECRYPT);
-    if (!crypto.unseal(unbuf, buf, publicKey, secretKey)) {
-      return false;
-    }
-    buf = unbuf;
+function unOpen(out, buf) {
+  if (buf.length !== lengths.OPEN_DECRYPT) {
+    return false;
   }
 
   let offset = 0;
-  const id = buf.readUInt32BE(offset);
+  out.id = buf.readUInt32BE(offset);
   offset += lengths.ID;
-  const timestamp = buf.slice(offset, offset + lengths.TIMESTAMP);
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
   offset += lengths.TIMESTAMP;
-  const version = buf.readUInt16BE(offset);
+  out.version = buf.readUInt16BE(offset);
   offset += lengths.VERSION;
-  const maxStreams = buf.readUInt16BE(offset);
-  offset += lengths.MAX_STREAMS;
-  const maxCurrency = buf.readUInt16BE(offset);
-  offset += lengths.MAX_CURRRENCY;
-  const nonce = Buffer.allocUnsafe(lengths.NONCE);
-  buf.copy(nonce, 0, offset, offset + lengths.NONCE);
+  out.nonce = Buffer.allocUnsafe(lengths.NONCE);
+  buf.copy(out.nonce, 0, offset, offset + lengths.NONCE);
   offset += lengths.NONCE;
-  const peerPublicKey = Buffer.allocUnsafe(lengths.PUBLIC_KEY);
-  buf.copy(peerPublicKey, 0, offset, offset + lengths.PUBLIC_KEY);
+  out.peerPublicKey = Buffer.allocUnsafe(lengths.PUBLIC_KEY);
+  buf.copy(out.peerPublicKey, 0, offset, offset + lengths.PUBLIC_KEY);
 
-  out.id = id;
-  out.timestamp = timestamp;
-  out.version = version;
-  out.maxStreams = maxStreams;
-  out.maxCurrency = maxCurrency;
-  out.nonce = nonce;
-  out.publicKey = peerPublicKey;
   return true;
 }
 
-function mkReject() {
+/**
+ * @return {number} Zero on failure; length written otherwise.
+ */
+function mkReject(buf, timestamp, rejectCode, rejectMessage) {
+  let len = lengths.TIMESTAMP + lengths.REJECT_CODE;
+  if (rejectMessage) {
+    if (rejectMessage.length <= lengths.REJECT_MESSAGE) {
+      len += rejectMessage.length;
+    }
+  }
+
+  if (buf.length < len) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
+  buf.writeUInt16BE(rejectCode, offset);
+  if (rejectMessage && rejectMessage.length) {
+    offset += lengths.REJECT_CODE;
+    rejectMessage.copy(buf, offset);
+  }
+
+  return len;
 }
 
-function unReject() {
+/**
+ * @return {boolean} True on success; false otherwise.
+ */
+function unReject(out, buf, prevTimestamp) {
+  let offset = 0;
+  const timestamp = Long.fromBytesBE(buf.slice(0, lengths.TIMESTAMP));
+  offset += lengths.TIMESTAMP;
+
+  if (!prevTimestamp.lessThan(timestamp)) {
+    return false;
+  }
+
+  const code = buf.readUInt16BE(offset);
+  if (code < reject.UNKNOWN || code > reject.ERROR) {
+    return false;
+  }
+
+  offset += lengths.REJECT_CODE;
+  let message = null;
+  if (buf.length > offset) {
+    message = utf8.toString('utf8', offset, buf.length);
+  }
+  out.code = code;
+  out.message = message;
+  return true;
 }
 
 const mkChallenge = mkOpen;
 
 const unChallenge = unOpen;
 
-function mkAccept() {
+function mkAccept(buf, maxStreams, maxCurrency, nonce) {
+  if (buf.length < lengths.ACCEPT_DECRYPT) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt16BE(maxStreams, offset);
+  offset += lengths.MAX_STREAMS;
+  buf.writeUInt16BE(maxCurrency, offset);
+  offset += lengths.MAX_CURRENCY;
+  nonce.copy(buf, offset, 0, lengths.NONCE);
+  return lengths.ACCEPT_DECRYPT;
 }
 
-function unAccept() {
+function unAccept(out, buf, expectedNonce) {
+  let offset = 0;
+  const maxStreams = buf.readUInt16BE(offset);
+  offset += lengths.MAX_STREAMS;
+  const maxCurrency = buf.readUInt16BE(offset);
+  offset += lengths.MAX_CURRENCY;
+  const token = buf.slice(offset);
+  if (token !== expectedNonce) {
+    return false;
+  }
+
+  out.maxStreams = maxStreams;
+  out.maxCurrency = maxCurrency;
+  return true;
 }
 
-function mkPing() {
+function mkPing(buf) {
 }
 
-function unPing() {
+function unPing(out, buf) {
 }
 
 class State extends Enum {}
@@ -268,12 +340,16 @@ State.initEnum({
           conn.state.transition(transType, conn, data);
           break;
         case Trans.REJECT:
-          if (unReject()) {
-            // TODO we're rejected
-          }
-          else {
-            const err = new Error('Invalid REJECT message... discarding');
-            conn.emit('error', err);
+          {
+            const out = {};
+            if (unReject(out, data.data, conn.peerTimestamp)) {
+              conn.peerTimestamp = out.timestamp;
+              // TODO we're rejected
+            }
+            else {
+              const err = new Error('Invalid REJECT message... discarding');
+              conn.emit('error', err);
+            }
           }
           break;
         case Trans.STOP:
@@ -393,10 +469,101 @@ class Conn extends EventEmitter {
   constructor(owner, id) {
     super();
 
-    this._sequence = 0;
+    this.plain = false;
     this.owner = owner;
     this.id = id;
     this._state = State.CREATE;
+
+    this._buffers = [];
+    this._buffersOut = 0;
+    this._bufferKeep = 0;
+
+    const mtus = this.sender.socket.mtu;
+    this._minmtu = mtus[0];
+    this._maxmtu = mtus[2];
+    this.emtu = mtus[1];
+
+    this._sequence = 0;
+  }
+
+  /**
+   * Set the effective MTU. If different than before, clear.
+   */
+  set emtu(mtu) {
+    if (this._effmtu && this._effmtu !== mtu) {
+      this._buffers = [];
+    }
+
+    this._effmtu = mtu;
+  }
+
+  /**
+   * @return {number} The effective MTU for outgoing buffers.
+   */
+  get emtu() {
+    return this._effmtu;
+  }
+
+  /**
+   * Any value less than or equal to is guaranteed single packet delivery.
+   * @return {number} The user MTU.
+   */
+  get umtu() {
+    if (!this.plain) {
+      return this.emtu - lengths.PACKET_PREFIX - lengths.BOX_PADDING - lengths.STREAM_DATA;
+    }
+    else {
+      return this.emtu - lengths.PACKET_PREFIX - lengths.STREAM_DATA;
+    }
+  }
+
+  /**
+   * This is the maximum message unit/size, in bytes, for a stream.
+   * @return {number} The user MMU.
+   */
+  get ummu() {
+    return this.umtu * lengths.MAX_FRAGMENT;
+  }
+
+  /**
+   * The input buffers may differ in size from the output buffers.
+   */
+  getInputBuffer(min) {
+    return Buffer.allocUnsafe(min);
+  }
+
+  /**
+   * Eventually we'll want to recycle buffers during high load periods.
+   */
+  recycleInputBuffer(buf) {
+    buf = null;
+  }
+
+  /**
+   * Get a recycled buffer or a newly allocated buffer.
+   * @return {Buffer} The length is the maximum that can be sent.
+   */
+  getBuffer() {
+    ++this._buffersOut;
+    if (this._buffers.length) {
+      return this._buffers.pop();
+    }
+    else {
+      return Buffer.allocUnsafe(this.emtu);
+    }
+  }
+
+  /**
+   * Recycle the buffer. During times of lower use, discard every 8th buffer.
+   */
+  recycleBuffer(buf) {
+    --this._buffersOut;
+    this._bufferKeep = (1 + this._bufferKeep) & 0x07;
+    if (buf.length === this.emtu) {
+      if (this._buffersOut < this._buffers.length || this._bufferKeep) {
+        this._buffers.push(buf);
+      }
+    }
   }
 
   get sequence() {

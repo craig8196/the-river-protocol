@@ -49,9 +49,17 @@ class UdpSender extends SenderInterface {
   constructor(socket, port, address) {
     super();
 
-    this.socket = socket;
-    this.port = port;
-    this.address = address;
+    this._socket = socket;
+    this._port = port;
+    this._address = address;
+  }
+
+  get socket() {
+    return this._socket;
+  }
+
+  get address() {
+    return this._address + ':' + String(this._port);
   }
 
   /**
@@ -93,9 +101,21 @@ class UdpSocket extends SocketInterface {
   }
 
   /**
+   * Min: The minimum guaranteed to work MTU.
+   * Rec: The recomended MTU to start using.
+   * Max: The maximum MTU possible. For different sockets this may be unlimited,
+   *      but it should be limited to 65,535 to prevent unreasonable memory 
+   *      consumption or block other streams or connections indefinitely.
+   * @return {[number, number, number]} Min, Recommended, Max MTU sizes.
+   */
+  get mtu() {
+    return [lengths.UDP_MTU_DATA_MIN, lengths.UDP_MTU_DATA_REC, lengths.UDP_MTU_DATA_MAX];
+  }
+
+  /**
    * Get the underlying socket object.
    */
-  socket() {
+  get socket() {
     return this._socket;
   }
 
@@ -103,7 +123,7 @@ class UdpSocket extends SocketInterface {
    * Get the address.
    * @return {string} Address in the format 'address:port'.
    */
-  address() {
+  get address() {
     const addr = this._socket.address();
     return addr.address + ':' + String(addr.port);
   }
