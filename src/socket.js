@@ -8,6 +8,7 @@ const dgram = require('dgram');
 const isIp = require('is-ip');
 const isValidPath = require('is-valid-path');
 /* Custom */
+const { lengths } = require('./spec.js');
 'use strict';
 
 
@@ -119,11 +120,19 @@ class UdpSocket extends SocketInterface {
     return this._socket;
   }
 
+  get port() {
+    return this._port;
+  }
+
+  get address() {
+    return this._address;
+  }
+
   /**
    * Get the address.
    * @return {string} Address in the format 'address:port'.
    */
-  get address() {
+  get fullAddress() {
     const addr = this._socket.address();
     return addr.address + ':' + String(addr.port);
   }
@@ -135,6 +144,13 @@ class UdpSocket extends SocketInterface {
    */
   bind(cb) {
     this._socket.bind({ exclusive: true, port: this._port, address: this._address }, cb);
+  }
+
+  /**
+   * Close the underlying socket.
+   */
+  close() {
+    this._socket.close();
   }
 
   /**

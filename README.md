@@ -35,13 +35,6 @@ TRP suffers from:
 * Constructive criticism is welcome (if you're gonna complain, have a solution ready).
 
 
-## Goals
-- [ ] Get the code and specification working.
-- [ ] Test code.
-- [ ] Finalize specs.
-- [ ] Re-work code to be in C.
-
-
 ## Features
 **Connectionless Design:**
 The over-arching architecture is client-server to reduce complexity.
@@ -164,7 +157,14 @@ https://tools.ietf.org/html/rfc4821
 
 
 ## TODO
-Additional research on ICE.
+- [ ] Additional research on ICE.
+- [ ] Research Byzantine fault tolerance and if there is any applicability in this protocol
+- [ ] Get the code and specification working.
+- [ ] Test code.
+- [ ] Finalize specs.
+- [ ] Re-work code to be in C.
+
+
 
 
 ## Abbreviation Map
@@ -183,12 +183,12 @@ UMTU: User MTU
 
 
 ## Dependencies/Technologies
-* sodium-native: For security. Seems to have the best interface and support.
+* dgram: For sending data fast and independent of order.
+* enumify: To correctly setup enumerations. Useful for state machines.
 * is-ip: To test if IP is IPv4 or IPv6
 * is-valid-path: To test if a string represents a valid path. This is for implementing over Unix Domain Sockets.
-* enumify: To correctly setup enumerations. Useful for state machines.
-* dgram: For sending data fast and independent of order.
-* net-ping: For detecting/determining MTU? Not used yet.
+* long: For timestamps and uint64 type values.
+* sodium-native: For security. Seems to have the best interface and support.
 
 
 ## Sources

@@ -6,8 +6,9 @@
 const EventEmitter = require('events');
 /* Community */
 const { Enum } = require('enumify');
+const Long = require('long');
 /* Custom */
-const { Trans, control, lengths } = require('./spec.js');
+const { version, control, lengths, reject } = require('./spec.js');
 const crypto = require('./crypto.js');
 const shared = require('./shared.js');
 'use strict';
@@ -35,25 +36,6 @@ function mkPrefix(buf, encrypted, c, id, sequence) {
   return offset;
 }
 
-function unPrefix(out, buf) {
-  if (buf.length < lengths.PACKET_PREFIX) {
-    return false;
-  }
-
-  out.encrypted = buf[0] & control.ENCRYPTED ? true : false;
-  out.c = buf[0] & control.MASK;
-  let offset = lengths.CONTROL;
-  out.id = readUInt32BE(offset);
-  offset += lengths.ID;
-  out.sequence = readUInt32BE(offset);
-
-  return true;
-}
-
-/**
- * Create the OPEN message buffer.
- * @return {[Buffer]} 
- */
 function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
   if (buf.length < lengths.OPEN_DECRYPT) {
     return 0;
@@ -198,96 +180,11 @@ function unPing(out, buf) {
 
 class State extends Enum {}
 State.initEnum({
-  CREATE: {
-    enter(/* conn */) {
-    },
-
-    exit(/* conn */) {
-    },
-
-    transition(transType, conn, data) {
-      switch (transType) {
-        case Trans.START:
-          conn.sender = data.sender;
-          conn.publicKeyOpen = data.publicKey;
-          conn.state = State.OPEN;
-          break;
-        case Trans.STOP:
-          conn.state = State.END;
-          break;
-        case Trans.OPEN:
-          if (unOpen(conn, data)) {
-            conn.state = State.CHALLENGE;
-          }
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            conn.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  OPEN: {
-    enter(conn) {
-      conn.emit('open');
-      conn.keys = crypto.mkKeyPair();
-      conn.nonce = crypto.mkNonce();
-      conn.streams = new Map();
-
-      conn.timestamp = shared.mkTimeNow();
-      const buf = mkOpen(0, conn.sequence,
-        conn.peerPublicKey,
-        conn.id, conn.timestamp, conn.owner.version,
-        conn.maxSequence, conn.maxCurrency,
-        conn.nonce, conn.keys.publicKey);
-      conn.sender.send(buf);
-    },
-
-    exit(/* conn */) {
-    },
-
-    transition(transType, conn, data) {
-      switch (transType) {
-        case Trans.CHALLENGE:
-          {
-            const out = {};
-            if (unChallenge(out, data.data, conn.keys.publicKey, conn.keys.secretKey)) {
-              conn.peerId = out.id;
-              conn.peerTimestamp = out.timestamp;
-              conn.peerVersion = out.version;
-              conn.streams.maxStreams = out.maxStreams;
-              conn.streams.maxCurrency = out.maxCurrency;
-              conn.peerNonce = out.nonce;
-              conn.peerPublicKey = out.publicKey;
-              conn.state = State.ACCEPT;
-            }
-            else {
-              // TODO
-            }
-          }
-          break;
-        case Trans.STOP:
-          conn.state = State.END;
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            conn.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  CHALLENGE: {
+  CREATE,
+  OPEN,
+  CHALLENGE,
     enter(conn) {
       conn.emit('challenge');
-      conn.keys = crypto.mkKeyPair();
-      conn.nonce = crypto.mkNonce();
-      conn.streams = new Map();
 
       conn.timestamp = shared.mkTimeNow();
       const buf = mkChallenge(conn.peerId, conn.sequence,
@@ -366,7 +263,8 @@ State.initEnum({
   },
 
   CONNECT: {
-    enter(/* conn */) {
+    enter(conn) {
+      conn.emit('connect');
       // TODO start ping immediately to better determine rtt and mtu?
     },
 
@@ -377,6 +275,19 @@ State.initEnum({
     transition(transType, conn, data) {
       switch (transType) {
         case Trans.STREAM:
+          if (data.encrypted) {
+            const len = data.length - lengths.BOX_PADDING;
+            const buf = conn.getInputBuffer(len);
+            const nonce = conn.getNonceScratch();
+            nonce[0] = (nonce[0] + data.control) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 1] = (nonce[lengths.NONCE - 1] + data.seq[0]) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 2] = (nonce[lengths.NONCE - 2] + data.seq[1]) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 3] = (nonce[lengths.NONCE - 3] + data.seq[2]) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 4] = (nonce[lengths.NONCE - 4] + data.seq[3]) & control.BYTE_MASK;
+            crypto.unbox(buf, data.data, nonce, conn.peerPublicKey, conn.peerSecretKey);
+            data.recycle = buf;
+            data.data = buf.slice(0, len);
+          }
           if (unStream(data.data)) {
             // TODO handle stream data and detect malicious breach of protocol
           }
@@ -466,13 +377,11 @@ State.initEnum({
 });
 
 class Conn extends EventEmitter {
-  constructor(owner, id) {
+  constructor(id) {
     super();
 
     this.plain = false;
-    this.owner = owner;
     this.id = id;
-    this._state = State.CREATE;
 
     this._buffers = [];
     this._buffersOut = 0;
@@ -484,7 +393,16 @@ class Conn extends EventEmitter {
     this.emtu = mtus[1];
 
     this._sequence = 0;
+    this._minSequence = this._sequence - lengths.WINDOW_REC;
+
+    this._timeoutOpenStart = lengths.OPEN_TIMEOUT_REC;
+
+    this.streams = new Map();
+
+    this.state = State.CREATE;
   }
+
+  // TODO allow the router to set the window
 
   /**
    * Set the effective MTU. If different than before, clear.
@@ -569,31 +487,275 @@ class Conn extends EventEmitter {
   get sequence() {
     return this._sequence++;
   }
-
-  get state() {
-    return this._state;
+  
+  seenPeerSequence(seq) {
+    //TODO
   }
 
-  set state(s) {
-    if (s === this._state) {
-      let err = new Error('Transitioning to same state: ' + String(s));
-      this.emit('error', err);
+  hasPeerSequence(seq) {
+    // TODO
+    return false;
+  }
+
+  setPeerPublicKeyOpen(key) {
+    this.peerPublicKeyOpen = key;
+  }
+
+  /**
+   * Protect ourselves through encryption and from packet replay attacks.
+   * @return {Buffer} Decrypted buffer if no fishy business detected; null otherwise.
+   */
+  firewall(buf, seq, c, encrypted, decryptBuf) {
+    const sequence = seq.readUInt32BE(0);
+
+    if (sequence < this._minSequence) {
+      return null;
     }
-    this._state.exit(this);
-    this._state = s;
-    this._state.enter(this);
+
+    if (this.hasPeerSequence(sequence)) {
+      return null;
+    }
+
+    if (encrypted) {
+      switch (c) {
+        case control.STREAM:
+        case control.ACCEPT:
+        case control.PING:
+          {
+            // Create specific nonce for this packet.
+            const nonce = this.getNonceScratch();
+            nonce[0] = (nonce[0] + data.control) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 1] = (nonce[lengths.NONCE - 1] + seq[0]) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 2] = (nonce[lengths.NONCE - 2] + seq[1]) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 3] = (nonce[lengths.NONCE - 3] + seq[2]) & control.BYTE_MASK;
+            nonce[lengths.NONCE - 4] = (nonce[lengths.NONCE - 4] + seq[3]) & control.BYTE_MASK;
+
+            // Unbox message.
+            if (crypto.unbox(decryptBuf, buf, nonce, this.keys.publicKey, this.keys.secretKey)) {
+            }
+            else {
+              return null;
+            }
+
+            // Set return buffer.
+            const len = buf.length - lengths.BOX_PADDING;
+            buf = decrypteBuf.slice(0, len);
+          }
+          break;
+        case control.OPEN:
+        case control.REJECT:
+        case control.CHALLENGE:
+          {
+            // Unseal message.
+            if (crypto.unseal(decryptBuf, buf, this.publicKeyOpen, this.secretKeyOpen)) {
+            }
+            else {
+              return null;
+            }
+
+            // Set return buffer.
+            const len = buf.length - lengths.SEAL_PADDING;
+            buf = decryptBuf.splice(0, len);
+          }
+          break;
+        default:
+          return null;
+      }
+    }
+
+    this.seenPeerSequence(sequence);
+
+    return buf;
   }
 
-  open(sender, publicKey) {
-    const data = {
-      sender,
-      publicKey,
-    };
-    this.state.transition(Trans.START, this, data);
+  handleOpenPacket(buf) {
+    switch (this.state) {
+      case State.CREATE:
+        {
+          const out = {};
+          if (unOpen(out, buf)) {
+          }
+          else {
+            const err = new Error('Invalid open request');
+            this.emit('warn', err)
+            this.end();
+          }
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected open call');
+          this.emit('warn', err)
+        }
+        break;
+    }
+  }
+
+  handleChallengePacket(buf, seq, encrypted) {
+    switch (this.state) {
+      case State.OPEN:
+        {
+          const out = {};
+          if (unChallenge(out, buf)) {
+            this.peerId = out.peerId;
+            this.peerTimestamp = out.timestamp;
+            this.peerVersion = out.version;
+            this.peerMaxStreams = out.maxStreams;
+            this.peerMaxCurrency = out.maxCurrency;
+            this.peerNonce = out.nonce;
+            this.peerPublicKey = out.publicKey;
+            this.state = State.ACCEPT;
+            // TODO send the accept packet
+          }
+          else {
+            const err = new Error('Invalid challenge');
+            this.emit('warn', err);
+          }
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected challenge packet');
+          this.emit('warn', err)
+        }
+        break;
+    }
+  }
+
+  send(buf, len) {
+    this.sender.send(
+  }
+
+  sendOpen() {
+    const buf = this.getBuffer();
+    
+    let openLen = 0;
+    if (this.encrypted) {
+      len = mkOpen(buf, id, timestamp, version, nonce, publicKey);
+    }
+    else {
+      len = mkOpen(buf, id, timestamp, version, null, null);
+    }
+
+    if (!len) {
+      return false;
+    }
+
+    return this.send(this.encryptOpen, buf, len);
+  }
+
+  startOpen() {
+    function openCycle(conn, counter, timeout) {
+      if (conn.state === State.OPEN) {
+        counter++;
+
+        if (counter === 3) {
+          counter = 0;
+          timeout *= 2;
+        }
+
+        if (conn.sendOpen()) {
+          conn._timeoutOpenHandle = setTimeout(openCycle, timeout, conn, counter, timeout);
+        }
+        else {
+          clearTimeout(conn._timeoutOpenHandle);
+          conn.close();
+        }
+      }
+      else {
+        clearTimeout(conn._timeoutOpenHandle);
+      }
+    }
+
+    openCycle(this, 0, this._timeoutOpenStart);
+  }
+
+  clearOpen() {
+    if (this._timeoutOpenHandle) {
+      clearTimeout(this._timeoutOpenHandle);
+    }
+  }
+
+  open(sender, options) {
+    switch (this.state) {
+      case State.CREATE:
+        {
+          // Save the sender.
+          this.sender = sender;
+
+          // Encrypt the open request.
+          if (options && options.publicKey) {
+            this.setPeerPublicKeyOpen(options.publicKey);
+          }
+
+          // Encrypt packets.
+          if (options && options.encrypt) {
+            this.keys = crypto.mkKeyPair();
+            this.nonce = crypto.mkNonce();
+            this.encrypt = true;
+          }
+
+          // Go to new state.
+          this.state = State.OPEN;
+          this.emit('open');
+
+          // Set our timestamp.
+          this.timestamp = shared.mkTimeNow();
+
+          // Start open algorithm.
+          this.startOpen();
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected open call');
+          this.emit('warn', err)
+        }
+        break;
+    }
+  }
+
+  challenge() {
+    switch (this.state) {
+      case State.CHALLENGE:
+        if (mkChallenge()) {
+        }
+        else {
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected open call');
+          this.emit('warn', err)
+        }
+        break;
+    }
   }
 
   close() {
-    this.state.transition(Trans.STOP, this);
+    switch (this.state) {
+      case State.CREATE:
+        this.cleanup();
+        break;
+      case State.OPEN:
+        this.cleanup();
+        break;
+      default:
+        {
+          const err = new Error('Unexpected open call');
+          this.emit('warn', err)
+        }
+        break;
+    }
+  }
+
+  cleanup() {
+    this.state = State.END;
+    this.emit('close');
+    this.streams = null;
+    this.keys = null;
+    this.nonce = null;
+    this.timestamp = null;
   }
 }
 

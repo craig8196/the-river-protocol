@@ -12,28 +12,52 @@ const { Trans, control, lengths } = require('./spec.js');
 const Conn = require('./conn.js');
 
 
+function unPrefix(out, buf) {
+  if (buf.length < lengths.PACKET_PREFIX) {
+    return false;
+  }
+
+  out.encrypted = !!(buf[0] & control.ENCRYPTED);
+  out.c = buf[0] & control.MASK;
+  let offset = lengths.CONTROL;
+  out.id = buf.readUInt32BE(offset);
+  offset += lengths.ID;
+  out.sequence = buf.slice(offset, offset + 4);
+
+  return true;
+}
+
 class State extends Enum {}
 State.initEnum({
   CREATE: {
     enter(router) {
       router.map = new Map();
 
+      /**
+       * Pass error along.
+       */
       function handleError(error) {
         router.state.transition(Trans.ERROR, router, error);
       }
 
       /**
-       * Do preliminary screening and pass messages along as needed.
+       * Pass packets along.
        */
       function handleMessage(message, rinfo) {
         const eventData = { packet: message, rinfo: rinfo };
         router.state.transition(Trans.PACKET, router, eventData);
       }
 
+      /**
+       * Listen for bind event.
+       */
       function handleListening() {
         router.state.transition(Trans.BIND, router);
       }
 
+      /**
+       * Listen for close event.
+       */
       function handleClose() {
         router.state.transition(Trans.CLOSE, router);
       }
@@ -142,11 +166,11 @@ State.initEnum({
             let t = Trans.GARBAGE;
             switch (c & control.MASK) {
               case control.STREAM:
-                if (encrypted || router.allowUnsafePacket)
+                if ((encrypted && len >= lengths.STREAM_ENCRYPT)
+                    || (!encrypted && len >= lengths.STREAM_DECRYPT)
+                    && (encrypted || router.allowUnsafePacket))
                 {
-                  if (control.unStream()) {
-                    t = Trans.STREAM;
-                  }
+                  t = Trans.STREAM;
                 }
                 break;
               case control.OPEN:
@@ -155,9 +179,7 @@ State.initEnum({
                     && router.allowIncoming
                     && (encrypted || router.allowUnsafeOpen))
                 {
-                  if (control.unOpen()) {
-                    t = Trans.OPEN;
-                  }
+                  t = Trans.OPEN;
                 }
                 break;
               case control.REJECT:
@@ -175,9 +197,7 @@ State.initEnum({
                     || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
                     && (encrypted || router.allowUnsafePacket))
                 {
-                  if (control.unChallenge()) {
-                    t = Trans.CHALLENGE;
-                  }
+                  t = Trans.CHALLENGE;
                 }
                 break;
               case control.ACCEPT:
@@ -186,9 +206,7 @@ State.initEnum({
                     && router.allowIncoming
                     && (encrypted || router.allowUnsafePacket))
                 {
-                  if (control.unAccept()) {
-                    t = Trans.ACCEPT;
-                  }
+                  t = Trans.ACCEPT;
                 }
                 break;
               default:
@@ -202,21 +220,17 @@ State.initEnum({
             }
 
             // Extract basic header values
-            let offset = lengths.CONTROL;
-            const id = pkt.readUInt32BE(offset);
-            offset += lengths.ID;
-            const seq = pkt.readUInt32BE(offset);
-            offset += lengths.SEQUENCE;
-            const rest = pkt.slice(offset);
-            const conn = router.getId(id);
+            const rest = pkt.slice(lengths.PACKET_PREFIX);
             const info = {
               encrypted: encrypted,
               control: c,
-              id: id,
-              seq: seq,
-              data: rest,
+              //id: id,
+              //seq: seq,
+              buf: rest,
               rinfo: data.rinfo,
             };
+            unPrefix(info, pkt);
+            const conn = router.getId(id);
             conn.state.transition(t, conn, info);
           }
           break;
@@ -248,7 +262,7 @@ State.initEnum({
         router.state = State.STOP;
       }
 
-      if (router.isSocketClosed) {
+      if (router.isSocketClosed || !router.map.size) {
         router.state = State.STOP;
       }
       else {
@@ -332,7 +346,7 @@ State.initEnum({
       router.map = null;
       router.socket = null;
 
-      router.emit('end');
+      router.emit('stop');
     },
 
     exit(/* router */) {
@@ -369,6 +383,7 @@ class Router extends EventEmitter {
     this.socket = socket;
 
     this.keys = options.keys;
+    this.maxConnections = options.maxConnections;
     this.allowIncoming = options.allowIncoming;
     this.allowOutgoing = options.allowOutgoing;
     this.allowUnsafeOpen = options.allowUnsafeOpen;
@@ -463,18 +478,25 @@ class Router extends EventEmitter {
     // need to be known to the user
     const router = this;
 
+    if (!options) {
+      options = {};
+    }
+
+    if (options.encrypt === undefined) {
+      options.encrypt = true;
+    }
+
     const promise = new Promise((resolve, reject) => {
       const id = router.newId();
       if (id) {
+        console.log('id = ' + String(id));
         dest.socket = router.socket;
         try {
           const sender = router.socket.mkSender(dest);
+          console.log(sender);
           const conn = new Conn(router, id);
-          if (options.publicKey) {
-            conn.setPublicKeyOpen(options.publicKey);
-          }
           router.setId(id, conn);
-          conn.on('connected', () => {
+          conn.on('connect', () => {
             resolve(conn);
           });
           conn.on('error', (err) => {
@@ -493,6 +515,9 @@ class Router extends EventEmitter {
 }
 
 function mkRouter(socket, options) {
+  if (!options) {
+    options = {};
+  }
   options.allowIncoming =
     'allowIncoming' in options ? (!!options.allowIncoming) : false;
   options.allowOutgoing =

@@ -10,28 +10,6 @@ const crypto = require('./crypto.js');
 'use strict';
 
 
-class Trans extends Enum {}
-Trans.initEnum([
-  // Router/Connection events
-  'START',// Start on client was called
-  'STOP',// Stop on client was called
-
-  // Socket events
-  'PACKET',// Received a message
-  'BIND',// Successful bind/listening on socket
-  'CLOSE',// Close socket was received
-  'ERROR',// Error on socket
-
-  // Filtered messages
-  'STREAM',
-  'OPEN',
-  'REJECT',
-  'CHALLENGE',
-  'ACCEPT',
-  'PING',
-  'GARBAGE',
-]);
-
 /**
  * Default timeout values in milliseconds.
  */
@@ -79,8 +57,9 @@ lengths.UDP_MTU_DATA_MAX = lengths.UDP_MTU_MAX - lengths.IP_HEADER - lengths.UDP
 const control = {
   MASK:      0x7F,
   ENCRYPTED: 0x80,
+  BYTE_MASK: 0x0FF,
 
-  PACKET:    0x00,
+  STREAM:    0x00,
   OPEN:      0x01,
   REJECT:    0x02,
   CHALLENGE: 0x03,
@@ -106,7 +85,6 @@ Object.freeze(lengths);
 Object.freeze(control);
 Object.freeze(reject);
 module.exports = {
-  Trans,
   timeouts,
   lengths,
   control,
