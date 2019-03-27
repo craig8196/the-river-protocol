@@ -8,7 +8,7 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { Trans, control, lengths } = require('./spec.js');
+const { control, lengths } = require('./spec.js');
 const Conn = require('./conn.js');
 
 
@@ -28,336 +28,13 @@ function unPrefix(out, buf) {
 }
 
 class State extends Enum {}
-State.initEnum({
-  CREATE: {
-    enter(router) {
-      router.map = new Map();
-
-      /**
-       * Pass error along.
-       */
-      function handleError(error) {
-        router.state.transition(Trans.ERROR, router, error);
-      }
-
-      /**
-       * Pass packets along.
-       */
-      function handleMessage(message, rinfo) {
-        const eventData = { packet: message, rinfo: rinfo };
-        router.state.transition(Trans.PACKET, router, eventData);
-      }
-
-      /**
-       * Listen for bind event.
-       */
-      function handleListening() {
-        router.state.transition(Trans.BIND, router);
-      }
-
-      /**
-       * Listen for close event.
-       */
-      function handleClose() {
-        router.state.transition(Trans.CLOSE, router);
-      }
-
-      // Save the event handlers
-      router.handleError = handleError;
-      router.handleMessage = handleMessage;
-      router.handleListening = handleListening;
-      router.handleClose = handleClose;
-
-      const socket = router.socket;
-      socket.on('error', handleError);
-      socket.on('message', handleMessage);
-      socket.on('listening', handleListening);
-      socket.on('close', handleClose);
-    },
-
-    exit(/* router */) {
-    },
-
-    transition(transType, router) {
-      switch (transType) {
-        case Trans.START:
-          router.state = State.START;
-          break;
-        case Trans.STOP:
-          router.state = State.END;
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            router.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  START: {
-    enter(router) {
-      router.emit('start');
-      router.socket.bind();
-    },
-
-    exit(/* router */) {
-    },
-
-    transition(transType, router) {
-      switch (transType) {
-        case Trans.BIND:
-          router.state = State.LISTEN;
-          break;
-        case Trans.CLOSE:
-          {
-            const err = new Error('Socket closed when expecting socket bind');
-            router.emit('error', err);
-            router.state = State.END;
-          }
-          break;
-        case Trans.STOP:
-          router.state = State.END;
-          break;
-        case Trans.ERROR:
-          {
-            const err = new Error('Unable to bind to socket.');
-            router.emit('error', err);
-            router.state = State.END;
-          }
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            router.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  LISTEN: {
-    enter(router) {
-      const socket = router.socket;
-      router.emit('listen', { port: socket.port, address: socket.address });
-    },
-
-    exit(/* router */) {
-    },
-
-    transition(transType, router, data) {
-      switch (transType) {
-        case Trans.PACKET:
-          {
-            // First, check the length
-            const pkt = data.packet;
-            const len = pkt.length;
-            if (len < lengths.PACKET_MIN) {
-              const err = new Error('Invalid packet length: ' + String(len));
-              router.emit('error', err);
-              break;
-            }
-
-            // Second, check that the control character and specific length
-            // is correct
-            const c = pkt[0];
-            const encrypted = c & control.ENCRYPTED;
-            let t = Trans.GARBAGE;
-            switch (c & control.MASK) {
-              case control.STREAM:
-                if ((encrypted && len >= lengths.STREAM_ENCRYPT)
-                    || (!encrypted && len >= lengths.STREAM_DECRYPT)
-                    && (encrypted || router.allowUnsafePacket))
-                {
-                  t = Trans.STREAM;
-                }
-                break;
-              case control.OPEN:
-                if (((encrypted && len === lengths.OPEN_ENCRYPT)
-                    || (!encrypted && len === lengths.OPEN_DECRYPT))
-                    && router.allowIncoming
-                    && (encrypted || router.allowUnsafeOpen))
-                {
-                  t = Trans.OPEN;
-                }
-                break;
-              case control.REJECT:
-                if (((encrypted && len === lengths.REJECT_ENCRYPT)
-                    || (!encrypted && len === lengths.REJECT_DECRYPT))
-                    && (encrypted || router.allowUnsafePacket))
-                {
-                  if (control.unReject()) {
-                    t = Trans.REJECT;
-                  }
-                }
-                break;
-              case control.CHALLENGE:
-                if (((encrypted && len === lengths.CHALLENGE_ENCRYPT)
-                    || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
-                    && (encrypted || router.allowUnsafePacket))
-                {
-                  t = Trans.CHALLENGE;
-                }
-                break;
-              case control.ACCEPT:
-                if (((encrypted && len === lengths.ACCEPT_ENCRYPT)
-                    || (!encrypted && len === lengths.ACCEPT_DECRYPT))
-                    && router.allowIncoming
-                    && (encrypted || router.allowUnsafePacket))
-                {
-                  t = Trans.ACCEPT;
-                }
-                break;
-              default:
-                break;
-            }
-
-            if (Trans.GARBAGE === t) {
-              const err = new Error('Invalid packet type from: ' + String(data.rinfo));
-              router.emit('error', err);
-              break;
-            }
-
-            // Extract basic header values
-            const rest = pkt.slice(lengths.PACKET_PREFIX);
-            const info = {
-              encrypted: encrypted,
-              control: c,
-              //id: id,
-              //seq: seq,
-              buf: rest,
-              rinfo: data.rinfo,
-            };
-            unPrefix(info, pkt);
-            const conn = router.getId(id);
-            conn.state.transition(t, conn, info);
-          }
-          break;
-        case Trans.CLOSE:
-          router.isSocketClosed = true;
-          router.state = State.STOP;
-          break;
-        case Trans.STOP:
-          router.state = State.DISCONNECT;
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            router.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  DISCONNECT: {
-    enter(router) {
-      function signalDisconnect (conn/* , id, map */) {
-        conn.close();
-      }
-
-      function handleDisconnectTimeout(router) {
-        delete router.disconnectTimeout;
-        router.state = State.STOP;
-      }
-
-      if (router.isSocketClosed || !router.map.size) {
-        router.state = State.STOP;
-      }
-      else {
-        router.map.forEach(signalDisconnect);
-        router.disconnectTimeoutMs = 5000;
-        router.disonnectTimeout = setTimeout(handleDisconnectTimeout, router.disconnectTimeoutMs, router);
-      }
-    },
-
-    exit(router) {
-      function forceDisconnect (conn/* , id, map */) {
-        conn.hardClose();
-      }
-
-      if (router.disconnectTimeout) {
-        clearTimeout(router.disconnectTimeout);
-        delete router.disconnectTimeout;
-      }
-
-      router.map.forEach(forceDisconnect);
-    },
-
-    transition(transType, router) {
-      switch (transType) {
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            router.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  STOP: {
-    enter(router) {
-      if (!router.isSocketClosed) {
-        router.socket.close();
-      }
-      else {
-        router.state = State.END;
-      }
-    },
-
-    exit(/* router */) {
-    },
-
-    transition(transType, router) {
-      switch (transType) {
-        case Trans.CLOSE:
-          router.state = State.END;
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            router.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  END: {
-    enter(router) {
-      // Remove listeners
-      const socket = router.socket;
-      if (router.handleError) {
-        socket.off('error', router.handleError);
-      }
-      if (router.handleMessage) {
-        socket.off('message', router.handleMessage);
-      }
-      if (router.handleListening) {
-        socket.off('listening', router.handleListening);
-      }
-      if (router.handleClose) {
-        socket.off('close', router.handleClose);
-      }
-
-      // Free resources
-      router.map = null;
-      router.socket = null;
-
-      router.emit('stop');
-    },
-
-    exit(/* router */) {
-    },
-
-    transition(transType, router) {
-      const err = new Error('Invalid transition attempt: ' + String(transType));
-      router.emit('error', err);
-    }
-  },
-});
+State.initEnum([
+  'CREATE',
+  'START',
+  'LISTEN',
+  'DISCONNECT',
+  'END',
+]);
 
 /**
  * Router is a junction or meeting of conns, thus managing 
@@ -381,6 +58,7 @@ class Router extends EventEmitter {
     }
 
     this.socket = socket;
+    this.map = new Map();
 
     this.keys = options.keys;
     this.maxConnections = options.maxConnections;
@@ -389,8 +67,59 @@ class Router extends EventEmitter {
     this.allowUnsafeOpen = options.allowUnsafeOpen;
     this.allowUnsafePacket = options.allowUnsafePacket;
 
-    this._state = State.CREATE;
-    this._state.enter(this);
+    this.state = State.CREATE;
+
+    this.setupListeners();
+  }
+
+  setupListeners() {
+    const router = this;
+
+    /**
+     * Pass error along.
+     */
+    function handleError(error) {
+      router.socketError(error);
+    }
+
+    /**
+     * Pass packets along.
+     */
+    function handleMessage(message, rinfo) {
+      router.socketPacket(message, rinfo);
+    }
+
+    /**
+     * Listen for bind event.
+     */
+    function handleListening() {
+      router.socketBind();
+    }
+
+    /**
+     * Listen for close event.
+     */
+    function handleClose() {
+      router.socketClose();
+    }
+
+    // Save the event handlers
+    this.handleError = handleError;
+    this.handleMessage = handleMessage;
+    this.handleListening = handleListening;
+    this.handleClose = handleClose;
+
+    this.socket.on('error', handleError);
+    this.socket.on('message', handleMessage);
+    this.socket.on('listening', handleListening);
+    this.socket.on('close', handleClose);
+  }
+
+  cleanup() {
+    this.socket.off('error', this.handleError);
+    this.socket.off('message', this.handleMessage);
+    this.socket.off('listening', this.handleListening);
+    this.socket.off('close', this.handleClose);
   }
 
   get state() {
@@ -459,30 +188,250 @@ class Router extends EventEmitter {
   }
 
   start() {
-    this.state.transition(Trans.START, this);
+    if (this.state === State.CREATE) {
+      this.state = State.START;
+      this.emit('start');
+      this.socket.bind();
+    }
+    else {
+      const err = new Error('Already started/stopped');
+      this.emit('error', err);
+    }
   }
 
-  stop() {
-    this.state.transition(Trans.STOP, this);
+  socketError(error) {
+    switch (this.state) {
+      case State.START:
+        {
+          const err = new Error('Unable to bind to socket.');
+          this.emit('error', err);
+          this.state = State.END;
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected error on socket: ' + String(error));
+          this.emit('error', err);
+        }
+        break;
+    }
+  }
+
+  processPacket(message, rinfo) {
+    // First, check the length
+    const pkt = data.packet;
+    const len = pkt.length;
+    if (len < lengths.PACKET_MIN) {
+      const err = new Error('Invalid packet length: ' + String(len));
+      router.emit('error', err);
+      break;
+    }
+
+    // Second, check that the control character and specific length
+    // is correct
+    const c = pkt[0];
+    const encrypted = c & control.ENCRYPTED;
+    let t = Trans.GARBAGE;
+    switch (c & control.MASK) {
+      case control.STREAM:
+        if ((encrypted && len >= lengths.STREAM_ENCRYPT)
+            || (!encrypted && len >= lengths.STREAM_DECRYPT)
+            && (encrypted || router.allowUnsafePacket))
+        {
+          t = Trans.STREAM;
+        }
+        break;
+      case control.OPEN:
+        if (((encrypted && len === lengths.OPEN_ENCRYPT)
+            || (!encrypted && len === lengths.OPEN_DECRYPT))
+            && router.allowIncoming
+            && (encrypted || router.allowUnsafeOpen))
+        {
+          t = Trans.OPEN;
+        }
+        break;
+      case control.REJECT:
+        if (((encrypted && len === lengths.REJECT_ENCRYPT)
+            || (!encrypted && len === lengths.REJECT_DECRYPT))
+            && (encrypted || router.allowUnsafePacket))
+        {
+          if (control.unReject()) {
+            t = Trans.REJECT;
+          }
+        }
+        break;
+      case control.CHALLENGE:
+        if (((encrypted && len === lengths.CHALLENGE_ENCRYPT)
+            || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
+            && (encrypted || router.allowUnsafePacket))
+        {
+          t = Trans.CHALLENGE;
+        }
+        break;
+      case control.ACCEPT:
+        if (((encrypted && len === lengths.ACCEPT_ENCRYPT)
+            || (!encrypted && len === lengths.ACCEPT_DECRYPT))
+            && router.allowIncoming
+            && (encrypted || router.allowUnsafePacket))
+        {
+          t = Trans.ACCEPT;
+        }
+        break;
+      default:
+        break;
+    }
+
+    if (Trans.GARBAGE === t) {
+      const err = new Error('Invalid packet type from: ' + String(data.rinfo));
+      router.emit('error', err);
+      break;
+    }
+
+    // Extract basic header values
+    const rest = pkt.slice(lengths.PACKET_PREFIX);
+    const info = {
+      encrypted: encrypted,
+      control: c,
+      //id: id,
+      //seq: seq,
+      buf: rest,
+      rinfo: data.rinfo,
+    };
+    unPrefix(info, pkt);
+    const conn = router.getId(id);
+    conn.state.transition(t, conn, info);
+  }
+
+  socketPacket(message, rinfo) {
+    switch (this.state) {
+      case State.LISTEN:
+        {
+          this.processPacket(message, rinfo);
+        }
+        break;
+      default:
+        {
+          const err = new Error('Received unexpected packet');
+          this.emit('error', err, rinfo);
+        }
+        break;
+    }
+  }
+
+  socketBind() {
+    if (this.state === State.START) {
+      this.state = State.LISTEN;
+      this.emit('listen');
+    }
+    else {
+      const err = new Error('Already bound');
+      this.emit('error', err);
+    }
+  }
+
+  socketClose() {
+    switch (this.state) {
+      case State.START:
+        {
+          const err = new Error('Socket closed when expecting socket bind');
+          this.emit('error', err);
+          this.state = State.END;
+        }
+        break;
+      case State.LISTEN:
+        {
+          this.state = State.HARDSTOP;
+          this.closeConnections(0);
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected socket close event');
+          this.emit('error', err);
+        }
+        break;
+    }
+  }
+
+  stop(graceMs) {
+    switch (this.state) {
+      case State.CREATE:
+        {
+          this.state = State.END;
+          this.cleanup();
+        }
+        break;
+      case State.START:
+        {
+          this.state = State.END;
+          this.cleanup();
+        }
+        break;
+      case State.LISTEN:
+        {
+          this.state = State.DISCONNECT;
+          this.closeConnections(graceMs);
+        }
+        break;
+      default:
+        {
+          const err = new Error('Invalid attempt to stop');
+          this.emit('error', err);
+        }
+        break;
+    }
+  }
+
+  closeConnections(graceMs) {
+    const router = this;
+
+    function signalSoftDisconnect(conn/* Unused: id, map */) {
+      conn.stop();
+    }
+
+    function signalHardDisconnect(conn/* Unused: id, map */) {
+      conn.close();
+    }
+
+    function handleDisconnectTimeout(router) {
+      delete router.disconnectTimeout;
+      router.state = State.END;
+      router.map.forEach(signalHardDisconnect);
+      router.map = null;
+      this.cleanup();
+    }
+
+    if (router.socket.isClosed() || !router.map.size) {
+      router.state = State.END;
+      this.cleanup();
+    }
+    else {
+      router.map.forEach(signalSoftDisconnect);
+      router.disonnectTimeout = setTimeout(handleDisconnectTimeout, graceMs, router);
+    }
   }
 
   /**
    * Attempts to create a new connection over the socket.
-   * @param {Object} dest - The destination description.
-   * @param {number} dest.port - Required. The destination port.
-   * @param {string} dest.address - Required. The destination address.
+   * @param {Object} dest - The destination options.
    * @return A promise that will either return a connection or an error.
    */
-  mkConnection(dest, options) {
+  mkConnection(dest) {
     // Internally the connection is called a conn, but these details don't
     // need to be known to the user
     const router = this;
+    const options = {};
 
-    if (!options) {
-      options = {};
+    if (dest.publicKey) {
+      options.publicKey = dest.publicKey;
+      delete dest.publicKey;
     }
 
-    if (options.encrypt === undefined) {
+    if (dest.encrypt) {
+      options.encrypt = true;
+      delete options.encrypt;
+    }
+    else if (dest.encrypt === undefined || dest.encrypt === null) {
       options.encrypt = true;
     }
 
@@ -490,8 +439,8 @@ class Router extends EventEmitter {
       const id = router.newId();
       if (id) {
         console.log('id = ' + String(id));
-        dest.socket = router.socket;
         try {
+          // Do we need to make the sender before the id?
           const sender = router.socket.mkSender(dest);
           console.log(sender);
           const conn = new Conn(router, id);
@@ -509,6 +458,10 @@ class Router extends EventEmitter {
           reject(err);
         }
       }
+      else {
+        const err = new Error('Could not generate a unique ID');
+        reject(err);
+      }
     });
     return promise;
   }
@@ -525,7 +478,7 @@ function mkRouter(socket, options) {
   options.allowUnsafeOpen =
     'allowUnsafeOpen' in options ? (!!options.allowUnsafeOpen) : false;
   options.allowUnsafePacket =
-    'allowUnsafePacket' in options ? (!! options.allowUnsafePacket) : false;
+    'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
   if (!options.keys) {
     options.keys = crypto.mkKeyPair();
   }

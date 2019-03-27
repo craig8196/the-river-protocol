@@ -46,6 +46,14 @@ function mkServer(socket, options) {
   if (!options) {
     options = {};
   }
+
+  if (!('maxConnections' in options)) {
+    options.maxConnections = 1024;
+  }
+  else if (options.maxConnections < 1) {
+    options.maxConnections = 1;
+  }
+
   options.allowIncoming = true;
   options.allowOutgoing = false;
   return new Server(mkRouter(socket, options));
@@ -79,6 +87,7 @@ class Client extends EventEmitter {
       client._isListening = true;
       console.log('mkConnection');
       const promise = client._router.mkConnection(client._dest, client._destOptions);
+      console.log('post mkConnection');
       promise
         .then((conn) => {
           client.emit('open');
@@ -109,25 +118,22 @@ class Client extends EventEmitter {
   }
 
   _cleanup() {
-    client._router = null;
-    client._dest = null;
-    client._conn = null;
+    this._router = null;
+    this._dest = null;
+    this._conn = null;
   }
 
   /**
    * Start the connection process.
-   * @param {Object} dest - The destination description. May vary depending on socket type.
-   * @param {string} address - The address to connect to for UDP sockets.
-   * @param {number} port - The port to connect to for UDP sockets.
+   * @param {Object} destOptions - The destination description. May vary depending on socket type.
    */
-  connect(dest, options) {
-    this._dest = dest;
-    this._destOptions = options;
+  connect(destOptions) {
+    this._destOptions = destOptions;
     if (!this._isListening) {
       this._router.start();
     }
     else {
-      const err = new Error('Unimplemented: reconnect to different server');
+      const err = new Error('Unimplemented: reconnect/double connect');
       this.emit('error', err);
     }
   }
@@ -173,8 +179,8 @@ function mkClient(socket, options) {
     options = {};
   }
   options.maxConnections = 1;
-  options.allowIncoming = true;
-  options.allowOutgoing = false;
+  options.allowIncoming = false;
+  options.allowOutgoing = true;
   return new Client(mkRouter(socket, options));
 }
 

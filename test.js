@@ -39,7 +39,7 @@ const t = Long.fromBytesBE(buf, true);
 console.log(t.toString());
 */
 
-const serverSocket = trip.mkSocket({ port: 3000 });
+const serverSocket = trip.mkSocket({ port: 42000 });
 const server = trip.mkServer(serverSocket, {});
 
 server.on('start', () => {
@@ -57,7 +57,11 @@ server.on('listen', () => {
     client.stop();
   });
 
-  client.connect({ address: 'localhost', port: 3000 });
+  client.on('error', (err) => {
+    console.warn('Client error: ' + String(err));
+  });
+
+  client.connect({ address: 'localhost', port: 42000 });
 });
 
 server.on('stop', () => {

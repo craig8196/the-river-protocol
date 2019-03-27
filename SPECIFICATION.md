@@ -61,19 +61,21 @@ Counters should be reset on each ping? Or some reasonable interval.
 
 
 ## Timestamp
-Timestamps are 8 bytes and are milliseconds since the Unix epoch.
+Timestamps are 8 octets and are milliseconds since the Unix epoch.
 
 
 ## Packet Types
 Leading bit of Control value is set if message is encrypted.
 Bits that are not specified must be zero and are reserved for future use.
+The control value is added to the 5th octet of the nonce as part-of
+packet replay protection.
 Control:
 0 - Stream
 1 - Open
 2 - Reject
 3 - Challenge
 4 - Accept
-5 - Ping
+5 - Ping?
 
 
 ### Stream
@@ -85,7 +87,7 @@ These are the most common packet types, so zero is used.
 | 4 | ID
 | 4 | Sequence
 | 16 | Encrypt
-| Variable | REQUESTS+
+| Variable | STREAM_REQUESTS+
 
 
 ### Open
@@ -177,14 +179,14 @@ The client cannot have lower limitations than the server.
 
 
 ### Ping
-TODO
+TODO Should this go into the STREAM protocol?
 
 
 ## Stream Protocol
 The Stream Protocol is internal and is after decryption to prevent malicious
 messages.
 All design should protect against packet replay.
-As a checksum and to save an extra byte, the upper two bits of the Stream
+As a checksum and to save an extra octet, the upper two bits of the Stream
 Control value are used to store the stream type, when applicable.
 
 0 - Ping
@@ -225,12 +227,23 @@ The returned response must have the same token and the senders timestamp.
 
 
 ### Data
-
+Note that all numeric fields (stream id, sequence, fragment, total) are
+listed as being one octet long; really the uppermost bit indicates continuation.
+Thus, numbers can be unlimited, in theory. In practice, 4 octets should not
+be exceeded for performance reasons and a conforming server should discard
+and disconnect if this limit is exceeded for security reasons, however, 
+allowing infinite sizes is within the standard (for unique use-cases and
+future compatibility).
+Limits are specified by the users of the protocol and going outside them breaks
+the standard, the connections are dropped by conforming implementations.
+The maximum message size until unlimited amounts are implemented is UMTU * 127.
+Note that default limits are set to be reasonable values for modern
+clients/servers.
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 2 | Stream Id
-| 4 | Sequence
+| 1 | Stream Id
+| 1 | Sequence
 | 1 | Fragment
 | 1 | Fragment Total
 | 2 | Payload Length

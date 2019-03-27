@@ -4,7 +4,6 @@
  */
 /* Core */
 /* Community */
-const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
 'use strict';

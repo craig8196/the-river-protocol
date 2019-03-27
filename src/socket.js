@@ -157,8 +157,8 @@ class UdpSocket extends SocketInterface {
    * Since different sockets support different sending options this is a generic
    * way to pass through the specific options.
    * @param {Object} options - Location to send data.
-   * @param {string} options.address - The IP or domain to connect to.
-   * @param {number} options.port - The port to connect to.
+   * @param {number} options.port - Required. The destination port.
+   * @param {string} options.address - Required. The destination address.
    * @return {SenderInterface} The interface used to send data.
    */
   mkSender(options) {

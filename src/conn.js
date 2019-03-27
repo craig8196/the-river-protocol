@@ -131,7 +131,7 @@ function unReject(out, buf, prevTimestamp) {
   offset += lengths.REJECT_CODE;
   let message = null;
   if (buf.length > offset) {
-    message = utf8.toString('utf8', offset, buf.length);
+    message = buf.toString('utf8', offset, buf.length);
   }
   out.code = code;
   out.message = message;
@@ -179,25 +179,17 @@ function unPing(out, buf) {
 }
 
 class State extends Enum {}
-State.initEnum({
-  CREATE,
-  OPEN,
-  CHALLENGE,
-    enter(conn) {
-      conn.emit('challenge');
-
-      conn.timestamp = shared.mkTimeNow();
-      const buf = mkChallenge(conn.peerId, conn.sequence,
-        conn.peerPublicKey,
-        conn.id, conn.timestamp, conn.owner.version,
-        conn.maxSequence, conn.maxCurrency,
-        conn.nonce, conn.keys.publicKey);
-      conn.sender.send(buf);
-    },
-
-    exit(/* conn */) {
-    },
-
+State.initEnum([
+  'CREATE',
+  'OPEN',
+  'CHALLENGE',
+  'ACCEPT',
+  'CONNECT',
+  'DISCONNECT',
+  'END'
+]);
+/*
+  CHALLENGE: {
     transition(transType, conn, data) {
       switch (transType) {
         case Trans.ACCEPT:
@@ -223,12 +215,6 @@ State.initEnum({
   },
 
   ACCEPT: {
-    enter(/* conn */) {
-    },
-
-    exit(/* conn */) {
-    },
-
     transition(transType, conn, data) {
       switch (transType) {
         case Trans.MESSAGE:
@@ -266,10 +252,6 @@ State.initEnum({
     enter(conn) {
       conn.emit('connect');
       // TODO start ping immediately to better determine rtt and mtu?
-    },
-
-    exit(/* conn */) {
-      // TODO destroy any ping context
     },
 
     transition(transType, conn, data) {
@@ -320,15 +302,9 @@ State.initEnum({
   },
 
   DISCONNECT: {
-    enter(/* conn */) {
       // TODO disconnect as nicely as possible
       // TODO notify all streams
-    },
-
-    exit(/* conn */) {
       // TODO cleanup anything remaining
-    },
-
     transition(transType, conn, data) {
       switch (transType) {
         case Trans.STREAM:
@@ -365,16 +341,13 @@ State.initEnum({
       // TODO notify owner
     },
 
-    exit(/* conn */) {
-    },
-
     transition(transType, conn) {
       // We're done, reject any further transitions
       let err = new Error('Invalid transition attempt: ' + String(transType));
       conn.emit('error', err);
     }
   },
-});
+  */
 
 class Conn extends EventEmitter {
   constructor(id) {
@@ -574,10 +547,11 @@ class Conn extends EventEmitter {
         {
           const out = {};
           if (unOpen(out, buf)) {
+            //
           }
           else {
             const err = new Error('Invalid open request');
-            this.emit('warn', err)
+            this.emit('error', err);
             this.end();
           }
         }
@@ -585,7 +559,7 @@ class Conn extends EventEmitter {
       default:
         {
           const err = new Error('Unexpected open call');
-          this.emit('warn', err)
+          this.emit('error', err);
         }
         break;
     }
@@ -616,14 +590,15 @@ class Conn extends EventEmitter {
       default:
         {
           const err = new Error('Unexpected challenge packet');
-          this.emit('warn', err)
+          this.emit('error', err)
         }
         break;
     }
   }
 
   send(buf, len) {
-    this.sender.send(
+    // TODO
+    this.sender.send();
   }
 
   sendOpen() {
@@ -677,6 +652,8 @@ class Conn extends EventEmitter {
   }
 
   open(sender, options) {
+    // HERE
+    exit(1);
     switch (this.state) {
       case State.CREATE:
         {
@@ -719,6 +696,15 @@ class Conn extends EventEmitter {
     switch (this.state) {
       case State.CHALLENGE:
         if (mkChallenge()) {
+          conn.emit('challenge');
+
+          conn.timestamp = shared.mkTimeNow();
+          const buf = mkChallenge(conn.peerId, conn.sequence,
+            conn.peerPublicKey,
+            conn.id, conn.timestamp, conn.owner.version,
+            conn.maxSequence, conn.maxCurrency,
+            conn.nonce, conn.keys.publicKey);
+          conn.sender.send(buf);
         }
         else {
         }
@@ -726,7 +712,7 @@ class Conn extends EventEmitter {
       default:
         {
           const err = new Error('Unexpected open call');
-          this.emit('warn', err)
+          this.emit('error', err)
         }
         break;
     }
