@@ -86,7 +86,7 @@ class Router extends EventEmitter {
      * Pass packets along.
      */
     function handleMessage(message, rinfo) {
-      router.socketPacket(message, rinfo);
+      router.socketMessage(message, rinfo);
     }
 
     /**
@@ -120,20 +120,6 @@ class Router extends EventEmitter {
     this.socket.off('message', this.handleMessage);
     this.socket.off('listening', this.handleListening);
     this.socket.off('close', this.handleClose);
-  }
-
-  get state() {
-    return this._state;
-  }
-
-  set state(s) {
-    if (s === this._state) {
-      const err = new Error('Transitioning to same state: ' + String(s));
-      this.emit('error', err);
-    }
-    this._state.exit(this);
-    this._state = s;
-    this._state.enter(this);
   }
 
   /**
@@ -217,96 +203,111 @@ class Router extends EventEmitter {
     }
   }
 
-  processPacket(message, rinfo) {
+  /**
+   * Process the message and information.
+   */
+  processMessage(msg, rinfo) {
+    // HERE
+    console.log('Receiving message...');
+    console.log(msg.toString('hex'));
+    console.log(msg.length);
+    console.log(rinfo.size);
+
     // First, check the length
-    const pkt = data.packet;
-    const len = pkt.length;
+    const len = msg.length;
     if (len < lengths.PACKET_MIN) {
       const err = new Error('Invalid packet length: ' + String(len));
-      router.emit('error', err);
-      break;
+      this.emit('error', err);
+      return;
+    }
+
+    const prefix = {};
+    if (!unPrefix(prefix, msg)) {
+      return false;
     }
 
     // Second, check that the control character and specific length
     // is correct
-    const c = pkt[0];
-    const encrypted = c & control.ENCRYPTED;
-    let t = Trans.GARBAGE;
+    const c = msg[0];
+    const encrypted = !!(c & control.ENCRYPTED);
+    let isValid = false;
     switch (c & control.MASK) {
       case control.STREAM:
         if ((encrypted && len >= lengths.STREAM_ENCRYPT)
             || (!encrypted && len >= lengths.STREAM_DECRYPT)
-            && (encrypted || router.allowUnsafePacket))
+            && prefix.id
+            && (encrypted || this.allowUnsafePacket))
         {
-          t = Trans.STREAM;
+          isValid = true;
         }
         break;
       case control.OPEN:
         if (((encrypted && len === lengths.OPEN_ENCRYPT)
             || (!encrypted && len === lengths.OPEN_DECRYPT))
-            && router.allowIncoming
-            && (encrypted || router.allowUnsafeOpen))
+            && this.allowIncoming
+            && !prefix.id
+            && (encrypted || this.allowUnsafeOpen))
         {
-          t = Trans.OPEN;
+          isValid = true;
         }
         break;
       case control.REJECT:
         if (((encrypted && len === lengths.REJECT_ENCRYPT)
             || (!encrypted && len === lengths.REJECT_DECRYPT))
-            && (encrypted || router.allowUnsafePacket))
+            && prefix.id
+            && (encrypted || this.allowUnsafePacket))
         {
-          if (control.unReject()) {
-            t = Trans.REJECT;
-          }
+          isValid = true;
         }
         break;
       case control.CHALLENGE:
         if (((encrypted && len === lengths.CHALLENGE_ENCRYPT)
             || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
-            && (encrypted || router.allowUnsafePacket))
+            && prefix.id
+            && (encrypted || this.allowUnsafePacket))
         {
-          t = Trans.CHALLENGE;
+          isValid = true;
         }
         break;
       case control.ACCEPT:
         if (((encrypted && len === lengths.ACCEPT_ENCRYPT)
             || (!encrypted && len === lengths.ACCEPT_DECRYPT))
-            && router.allowIncoming
-            && (encrypted || router.allowUnsafePacket))
+            && this.allowIncoming
+            && prefix.id
+            && (encrypted || this.allowUnsafePacket))
         {
-          t = Trans.ACCEPT;
+          isValid = true;
         }
         break;
       default:
         break;
     }
 
-    if (Trans.GARBAGE === t) {
-      const err = new Error('Invalid packet type from: ' + String(data.rinfo));
-      router.emit('error', err);
-      break;
+    if (!isValid) {
+      const err = new Error('Invalid packet type from: ' + String(rinfo));
+      this.emit('error', err);
+      return;
     }
 
     // Extract basic header values
-    const rest = pkt.slice(lengths.PACKET_PREFIX);
-    const info = {
-      encrypted: encrypted,
-      control: c,
-      //id: id,
-      //seq: seq,
-      buf: rest,
-      rinfo: data.rinfo,
-    };
-    unPrefix(info, pkt);
-    const conn = router.getId(id);
-    conn.state.transition(t, conn, info);
+    // TODO const rest = msg.slice(lengths.PACKET_PREFIX);
+    const conn = this.getId(prefix.id);
+    if (conn) {
+      // TODO pass through firewall
+      // TODO decrypt
+      // TODO pass along to connection
+    }
+    else {
+      // TODO handle case of non-exist
+      return false;
+    }
   }
 
-  socketPacket(message, rinfo) {
+  socketMessage(message, rinfo) {
     switch (this.state) {
       case State.LISTEN:
         {
-          this.processPacket(message, rinfo);
+          this.processMessage(message, rinfo);
         }
         break;
       default:
@@ -413,7 +414,7 @@ class Router extends EventEmitter {
 
   /**
    * Attempts to create a new connection over the socket.
-   * @param {Object} dest - The destination options.
+   * @param {Object} dest - Required. The destination description. May vary depending on socket type.
    * @return A promise that will either return a connection or an error.
    */
   mkConnection(dest) {
@@ -441,9 +442,7 @@ class Router extends EventEmitter {
         console.log('id = ' + String(id));
         try {
           // Do we need to make the sender before the id?
-          const sender = router.socket.mkSender(dest);
-          console.log(sender);
-          const conn = new Conn(router, id);
+          const conn = new Conn(id);
           router.setId(id, conn);
           conn.on('connect', () => {
             resolve(conn);
@@ -452,9 +451,10 @@ class Router extends EventEmitter {
             router.setId(id, null);
             reject(err);
           });
-          conn.open(sender, options);
+          conn.open(router.socket.mkSender(dest), options);
         }
         catch (err) {
+          console.log(err);
           reject(err);
         }
       }

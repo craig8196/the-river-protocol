@@ -50,17 +50,17 @@ class UdpSender extends SenderInterface {
   constructor(socket, port, address) {
     super();
 
-    this._socket = socket;
-    this._port = port;
-    this._address = address;
+    this.udpSocket = socket;
+    this.udpPort = port;
+    this.udpAddress = address;
   }
 
   get socket() {
-    return this._socket;
+    return this.udpSocket;
   }
 
   get address() {
-    return this._address + ':' + String(this._port);
+    return String(this.udpAddress) + ':' + String(this.udpPort);
   }
 
   /**
@@ -69,7 +69,7 @@ class UdpSender extends SenderInterface {
    * @param {Function} cb - Called when the data was sent so the buffer can be reused.
    */
   send(msg, cb) {
-    this.socket.send(msg, this.port, this.address, cb);
+    this.socket.send(msg, this.udpPort, this.udpAddress, cb);
   }
 }
 

@@ -35,7 +35,7 @@ const NONCE_BYTES = sodium.crypto_secretbox_NONCEBYTES;
  */
 function mkNonce(buf) {
   if (!buf || buf.length < NONCE_BYTES) {
-    buf = Buffer.allocUnsafe(NONCE_BYTES);
+    buf = Buffer.allocUnsafeSlow(NONCE_BYTES);
   }
 
   sodium.randombytes_buf(buf);
@@ -54,11 +54,11 @@ const SECRET_KEY_BYTES = sodium.crypto_box_SECRETKEYBYTES;
  */
 function mkKeyPair(publicKey, secretKey) {
   if (!publicKey || publicKey.length < PUBLIC_KEY_BYTES) {
-    publicKey = Buffer.allocUnsafe(PUBLIC_KEY_BYTES);
+    publicKey = Buffer.allocUnsafeSlow(PUBLIC_KEY_BYTES);
   }
 
   if (!secretKey || secretKey.length < SECRET_KEY_BYTES) {
-    secretKey = Buffer.allocUnsafe(SECRET_KEY_BYTES);
+    secretKey = Buffer.allocUnsafeSlow(SECRET_KEY_BYTES);
   }
 
   sodium.crypto_box_keypair(publicKey, secretKey);

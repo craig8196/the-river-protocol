@@ -72,6 +72,7 @@ class Client extends EventEmitter {
   constructor(router) {
     super();
 
+    this._isListening = false;
     this._router = router;
     this._dest = null;
     this._conn = null;
@@ -86,7 +87,7 @@ class Client extends EventEmitter {
       // Create the connection and emit 'open' when connected.
       client._isListening = true;
       console.log('mkConnection');
-      const promise = client._router.mkConnection(client._dest, client._destOptions);
+      const promise = client._router.mkConnection(client._dest);
       console.log('post mkConnection');
       promise
         .then((conn) => {
@@ -118,6 +119,7 @@ class Client extends EventEmitter {
   }
 
   _cleanup() {
+    this._isListening = false;
     this._router = null;
     this._dest = null;
     this._conn = null;
@@ -125,10 +127,10 @@ class Client extends EventEmitter {
 
   /**
    * Start the connection process.
-   * @param {Object} destOptions - The destination description. May vary depending on socket type.
+   * @param {Object} dest - Required. The destination description. May vary depending on socket type.
    */
-  connect(destOptions) {
-    this._destOptions = destOptions;
+  connect(dest) {
+    this._dest = dest;
     if (!this._isListening) {
       this._router.start();
     }
@@ -155,6 +157,8 @@ class Client extends EventEmitter {
    * @note Don't forget to listen to back pressure in case the stream cannot be created yet.
    * @param {number} id - Optional. Specify a specific identifier for the stream.
    * @return {Stream} The stream. Null if there is no connection created yet.
+   * 
+   * TODO make sure that streams obey pipe semantics
    */
   mkStream(id) {
     if (this._conn) {

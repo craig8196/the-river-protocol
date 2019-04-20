@@ -1,6 +1,8 @@
 /**
  * @file Connection management code.
  * @author Craig Jacobson
+ *
+ * TODO use allocUnsafeSlow for longer lived values
  */
 /* Core */
 const EventEmitter = require('events');
@@ -8,12 +10,15 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 const Long = require('long');
 /* Custom */
-const { version, control, lengths, reject } = require('./spec.js');
+const { version, timeouts, lengths, control, reject } = require('./spec.js');
 const crypto = require('./crypto.js');
 const shared = require('./shared.js');
 'use strict';
 
 
+/**
+ * Encode prefix.
+ */
 function mkPrefix(buf, encrypted, c, id, sequence) {
   if (buf.length < lengths.PACKET_PREFIX) {
     return 0;
@@ -36,6 +41,9 @@ function mkPrefix(buf, encrypted, c, id, sequence) {
   return offset;
 }
 
+/**
+ * Encode unencrypted open information.
+ */
 function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
   if (buf.length < lengths.OPEN_DECRYPT) {
     return 0;
@@ -44,10 +52,13 @@ function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
   let offset = 0;
   buf.writeUInt32BE(id, offset);
   offset += lengths.ID;
+  console.log(offset);
   buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
   offset += lengths.TIMESTAMP/2;
+  console.log(offset);
   buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
   offset += lengths.TIMESTAMP/2;
+  console.log(offset);
   buf.writeUInt16BE(version, offset);
   offset += lengths.VERSION;
   nonce.copy(buf, offset, 0, lengths.NONCE);
@@ -59,6 +70,7 @@ function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
 }
 
 /**
+ * Decode open information.
  * @return {boolean} True if successful, false otherwise.
  */
 function unOpen(out, buf) {
@@ -353,58 +365,42 @@ class Conn extends EventEmitter {
   constructor(id) {
     super();
 
-    this.plain = false;
     this.id = id;
-
-    this._buffers = [];
-    this._buffersOut = 0;
-    this._bufferKeep = 0;
-
-    const mtus = this.sender.socket.mtu;
-    this._minmtu = mtus[0];
-    this._maxmtu = mtus[2];
-    this.emtu = mtus[1];
-
-    this._sequence = 0;
-    this._minSequence = this._sequence - lengths.WINDOW_REC;
-
-    this._timeoutOpenStart = lengths.OPEN_TIMEOUT_REC;
-
     this.streams = new Map();
 
+    this.sender = null;
+    this.encrypted = true;
+    this.timestamp = null;
+
     this.state = State.CREATE;
+
+    this.buffers = [];
+    this.bufferKeep = 0;
+
+    this.minmtu = lengths.UDP_MTU_DATA_MIN;
+    this.effmtu = lengths.UDP_MTU_DATA_REC;
+    this.maxmtu = lengths.UDP_MTU_DATA_MAX;
+
+    this.sequence = 0;
+    this.sequenceWindow = lengths.WINDOW_REC;
+    this.timeoutOpenMs = timeouts.OPEN_TIMEOUT_REC;
+
+    this.peerPublicKeyOpen = null;
+    this.peerMinSequence = 0;
   }
 
   // TODO allow the router to set the window
-
-  /**
-   * Set the effective MTU. If different than before, clear.
-   */
-  set emtu(mtu) {
-    if (this._effmtu && this._effmtu !== mtu) {
-      this._buffers = [];
-    }
-
-    this._effmtu = mtu;
-  }
-
-  /**
-   * @return {number} The effective MTU for outgoing buffers.
-   */
-  get emtu() {
-    return this._effmtu;
-  }
 
   /**
    * Any value less than or equal to is guaranteed single packet delivery.
    * @return {number} The user MTU.
    */
   get umtu() {
-    if (!this.plain) {
-      return this.emtu - lengths.PACKET_PREFIX - lengths.BOX_PADDING - lengths.STREAM_DATA;
+    if (this.encrypted) {
+      return this.effmtu - lengths.PACKET_PREFIX - lengths.BOX_PADDING - lengths.STREAM_DATA;
     }
     else {
-      return this.emtu - lengths.PACKET_PREFIX - lengths.STREAM_DATA;
+      return this.effmtu - lengths.PACKET_PREFIX - lengths.STREAM_DATA;
     }
   }
 
@@ -426,8 +422,7 @@ class Conn extends EventEmitter {
   /**
    * Eventually we'll want to recycle buffers during high load periods.
    */
-  recycleInputBuffer(buf) {
-    buf = null;
+  recycleInputBuffer(/* buf */) {
   }
 
   /**
@@ -435,12 +430,11 @@ class Conn extends EventEmitter {
    * @return {Buffer} The length is the maximum that can be sent.
    */
   getBuffer() {
-    ++this._buffersOut;
-    if (this._buffers.length) {
-      return this._buffers.pop();
+    if (this.buffers.length) {
+      return this.buffers.pop();
     }
     else {
-      return Buffer.allocUnsafe(this.emtu);
+      return Buffer.allocUnsafe(this.effmtu);
     }
   }
 
@@ -448,17 +442,21 @@ class Conn extends EventEmitter {
    * Recycle the buffer. During times of lower use, discard every 8th buffer.
    */
   recycleBuffer(buf) {
-    --this._buffersOut;
-    this._bufferKeep = (1 + this._bufferKeep) & 0x07;
-    if (buf.length === this.emtu) {
-      if (this._buffersOut < this._buffers.length || this._bufferKeep) {
-        this._buffers.push(buf);
-      }
+    this.bufferKeep = (1 + this.bufferKeep) & 0x07;
+    if (buf.length === this.effmtu && this.bufferKeep) {
+      this.buffers.push(buf);
+    }
+    else {
+      // Let garbage collection pick it up.
     }
   }
 
   get sequence() {
     return this._sequence++;
+  }
+
+  set sequence(val) {
+    this._sequence = val;
   }
   
   seenPeerSequence(seq) {
@@ -470,10 +468,6 @@ class Conn extends EventEmitter {
     return false;
   }
 
-  setPeerPublicKeyOpen(key) {
-    this.peerPublicKeyOpen = key;
-  }
-
   /**
    * Protect ourselves through encryption and from packet replay attacks.
    * @return {Buffer} Decrypted buffer if no fishy business detected; null otherwise.
@@ -481,7 +475,7 @@ class Conn extends EventEmitter {
   firewall(buf, seq, c, encrypted, decryptBuf) {
     const sequence = seq.readUInt32BE(0);
 
-    if (sequence < this._minSequence) {
+    if (sequence < this.peerMinSequence) {
       return null;
     }
 
@@ -590,70 +584,61 @@ class Conn extends EventEmitter {
       default:
         {
           const err = new Error('Unexpected challenge packet');
-          this.emit('error', err)
+          this.emit('error', err);
         }
         break;
     }
   }
 
-  send(buf, len) {
-    // TODO
-    this.sender.send();
-  }
-
   sendOpen() {
+    const conn = this;
+
+    function sendOpenCallback() {
+      conn.recycleBuffer(sendBuf);
+    }
+
     const buf = this.getBuffer();
     
-    let openLen = 0;
+    let len = 0;
     if (this.encrypted) {
-      len = mkOpen(buf, id, timestamp, version, nonce, publicKey);
+      len = mkOpen(buf, this.id, this.timestamp, version, this.nonce, this.keys.publicKey);
     }
     else {
-      len = mkOpen(buf, id, timestamp, version, null, null);
+      len = mkOpen(buf, this.id, this.timestamp, version, null, null);
     }
 
     if (!len) {
       return false;
     }
 
-    return this.send(this.encryptOpen, buf, len);
-  }
+    const sendBuf = this.getBuffer();
 
-  startOpen() {
-    function openCycle(conn, counter, timeout) {
-      if (conn.state === State.OPEN) {
-        counter++;
+    let sendLen = mkPrefix(sendBuf, !!this.peerPublicKeyOpen, control.OPEN, 0, this.sequence);
 
-        if (counter === 3) {
-          counter = 0;
-          timeout *= 2;
-        }
+    if (!sendLen) {
+      return false;
+    }
 
-        if (conn.sendOpen()) {
-          conn._timeoutOpenHandle = setTimeout(openCycle, timeout, conn, counter, timeout);
-        }
-        else {
-          clearTimeout(conn._timeoutOpenHandle);
-          conn.close();
-        }
-      }
-      else {
-        clearTimeout(conn._timeoutOpenHandle);
+    if (this.peerPublicKeyOpen) {
+      if (!crypto.seal(sendBuf.slice(sendLen), buf.slice(0, len), this.peerPublicKeyOpen)) {
+        return false;
       }
     }
 
-    openCycle(this, 0, this._timeoutOpenStart);
+    this.recycleBuffer(buf);
+
+    this.sender.send(sendBuf, sendOpenCallback);
+    return true;
   }
 
-  clearOpen() {
-    if (this._timeoutOpenHandle) {
-      clearTimeout(this._timeoutOpenHandle);
-    }
-  }
-
+  /**
+   * Open this connection. The handshake process will begin.
+   * @param {Sender} sender - The object used to send packets to the correct destination.
+   * @param {Object} options - The security requirements of the destination.
+   * @param {Buffer} options.publicKey - The binary public key as returned from mkKeyPair used to ensure we are connecting to the correct server.
+   * @param {boolean} options.encrypt - Flag to indicate if further communications past the opening packet are to be encrypted.
+   */
   open(sender, options) {
-    // HERE
-    exit(1);
     switch (this.state) {
       case State.CREATE:
         {
@@ -662,7 +647,9 @@ class Conn extends EventEmitter {
 
           // Encrypt the open request.
           if (options && options.publicKey) {
-            this.setPeerPublicKeyOpen(options.publicKey);
+            // TODO need to copy externally passed buffers for added reliability?
+            // Or in the mk functions perform the duplication.
+            this.peerPublicKeyOpen = options.publicKey;
           }
 
           // Encrypt packets.
@@ -686,9 +673,47 @@ class Conn extends EventEmitter {
       default:
         {
           const err = new Error('Unexpected open call');
-          this.emit('warn', err)
+          this.emit('error', err);
         }
         break;
+    }
+  }
+
+  /**
+   * Start the open connection handshake.
+   */
+  startOpen() {
+    function openCycle(conn, counter, timeout) {
+      if (conn.state === State.OPEN) {
+        counter++;
+
+        if (counter === 3) {
+          counter = 0;
+          timeout *= 2;
+        }
+
+        if (conn.sendOpen()) {
+          conn.timeoutOpenHandle = setTimeout(openCycle, timeout, conn, counter, timeout);
+        }
+        else {
+          clearTimeout(conn.timeoutOpenHandle);
+          conn.close();
+        }
+      }
+      else {
+        clearTimeout(conn.timeoutOpenHandle);
+      }
+    }
+
+    openCycle(this, 0, this.timeoutOpenStart);
+  }
+
+  /**
+   * Clear any timeouts or variables from startOpen.
+   */
+  clearOpen() {
+    if (this.timeoutOpenHandle) {
+      clearTimeout(this.timeoutOpenHandle);
     }
   }
 
@@ -711,7 +736,7 @@ class Conn extends EventEmitter {
         break;
       default:
         {
-          const err = new Error('Unexpected open call');
+          const err = new Error('Unexpected challenge call');
           this.emit('error', err)
         }
         break;
@@ -728,7 +753,7 @@ class Conn extends EventEmitter {
         break;
       default:
         {
-          const err = new Error('Unexpected open call');
+          const err = new Error('Unexpected close call');
           this.emit('warn', err)
         }
         break;
