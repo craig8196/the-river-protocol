@@ -108,7 +108,7 @@ packet replay and they should be dropped without a second thought.
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 4 | Zeros
+| 4 | ID (Zeros)
 | 4 | Sequence
 | 48 | Encrypt
 | 4 | ID for responses
