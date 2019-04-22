@@ -18,10 +18,11 @@ const version = 0;
  * Default timeout values in milliseconds.
  */
 const timeouts = {
-  PING_MIN:     15 * 1000,
-  PING_REC:     20 * 1000,
-  PING_MAX:     60 * 60 * 1000,
+  PING_MIN:         15 * 1000,
+  PING_REC:         20 * 1000,
+  PING_MAX:         60 * 60 * 1000,
   OPEN_TIMEOUT_REC: 20,
+  DEFAULT_GRACE:    50,
 };
 
 /**
@@ -60,6 +61,11 @@ const lengths = {
 lengths.UDP_MTU_DATA_MIN = lengths.UDP_MTU_MIN - lengths.IP_HEADER - lengths.UDP_HEADER;
 lengths.UDP_MTU_DATA_REC = lengths.UDP_MTU_REC - lengths.IP_HEADER - lengths.UDP_HEADER;
 lengths.UDP_MTU_DATA_MAX = lengths.UDP_MTU_MAX - lengths.IP_HEADER - lengths.UDP_HEADER;
+lengths.PREFIX = lengths.CONTROL + lengths.ID + lengths.SEQUENCE;
+lengths.OPEN_DATA = lengths.ID + lengths.TIMESTAMP + lengths.VERSION
+                    + lengths.NONCE + lengths.PUBLIC_KEY;
+lengths.OPEN_DECRYPT = lengths.PREFIX + lengths.OPEN_DATA;
+lengths.OPEN_ENCRYPT = lengths.OPEN_DECRYPT + lengths.SEAL_PADDING;
 
 /**
  * Control values to identify different messages.

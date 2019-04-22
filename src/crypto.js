@@ -134,6 +134,9 @@ function unseal(message, emessage, publicKey, secretKey) {
   return sodium.crypto_box_seal_open(message, emessage, publicKey, secretKey);
 }
 
+const NO_NONCE = Buffer.allocUnsafeSlow(NONCE_BYTES).fill(0);
+const NO_KEY = Buffer.allocUnsafeSlow(PUBLIC_KEY_BYTES).fill(0);
+
 module.exports = {
   mkId,
   mkNonce,
@@ -146,5 +149,7 @@ module.exports = {
   PUBLIC_KEY_BYTES,
   BOX_MAC_BYTES,
   SEAL_MAC_BYTES,
+  NO_NONCE,
+  NO_KEY,
 };
 

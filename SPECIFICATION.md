@@ -114,8 +114,8 @@ packet replay and they should be dropped without a second thought.
 | 4 | ID for responses
 | 8 | Timestamp
 | 2 | Version ID
-| 24 | Nonce client
-| 32 | Public key client
+| 24 | Nonce client (Zeroes if unencrypted)
+| 32 | Public key client (Zeroes if unencrypted)
 
 
 ### Reject

@@ -8,24 +8,9 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { control, lengths } = require('./spec.js');
+const { timeouts, lengths, control } = require('./spec.js');
 const Conn = require('./conn.js');
 
-
-function unPrefix(out, buf) {
-  if (buf.length < lengths.PACKET_PREFIX) {
-    return false;
-  }
-
-  out.encrypted = !!(buf[0] & control.ENCRYPTED);
-  out.c = buf[0] & control.MASK;
-  let offset = lengths.CONTROL;
-  out.id = buf.readUInt32BE(offset);
-  offset += lengths.ID;
-  out.sequence = buf.slice(offset, offset + 4);
-
-  return true;
-}
 
 class State extends Enum {}
 State.initEnum([
@@ -115,7 +100,7 @@ class Router extends EventEmitter {
     this.socket.on('close', handleClose);
   }
 
-  cleanup() {
+  cleanupListeners() {
     this.socket.off('error', this.handleError);
     this.socket.off('message', this.handleMessage);
     this.socket.off('listening', this.handleListening);
@@ -127,17 +112,22 @@ class Router extends EventEmitter {
    * @return {number} Non-zero on success, zero otherwise.
    */
   newId() {
-    let id = crypto.mkId();
-    let count = 1;
-    const maxTry = 30;
-    while (id === 0 || this.hasId(id)) {
-      if (maxTry === count) {
-        return 0;
+    if (this.state === State.LISTEN) {
+      let id = crypto.mkId();
+      let count = 1;
+      const maxTry = 30;
+      while (id === 0 || this.hasId(id)) {
+        if (maxTry === count) {
+          return 0;
+        }
+        id = crypto.mkId();
+        ++count;
       }
-      id = crypto.mkId();
-      ++count;
+      return id;
     }
-    return id;
+    else {
+      return 0;
+    }
   }
 
   /**
@@ -211,7 +201,7 @@ class Router extends EventEmitter {
     console.log('Receiving message...');
     console.log(msg.toString('hex'));
     console.log(msg.length);
-    console.log(rinfo.size);
+    console.log(rinfo);
 
     // First, check the length
     const len = msg.length;
@@ -221,13 +211,9 @@ class Router extends EventEmitter {
       return;
     }
 
-    const prefix = {};
-    if (!unPrefix(prefix, msg)) {
-      return false;
-    }
+    const id = msg.readUInt32BE(lengths.CONTROL);
 
-    // Second, check that the control character and specific length
-    // is correct
+    // Second, check that the control character and specific length are correct
     const c = msg[0];
     const encrypted = !!(c & control.ENCRYPTED);
     let isValid = false;
@@ -235,7 +221,6 @@ class Router extends EventEmitter {
       case control.STREAM:
         if ((encrypted && len >= lengths.STREAM_ENCRYPT)
             || (!encrypted && len >= lengths.STREAM_DECRYPT)
-            && prefix.id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
@@ -245,7 +230,6 @@ class Router extends EventEmitter {
         if (((encrypted && len === lengths.OPEN_ENCRYPT)
             || (!encrypted && len === lengths.OPEN_DECRYPT))
             && this.allowIncoming
-            && !prefix.id
             && (encrypted || this.allowUnsafeOpen))
         {
           isValid = true;
@@ -254,7 +238,6 @@ class Router extends EventEmitter {
       case control.REJECT:
         if (((encrypted && len === lengths.REJECT_ENCRYPT)
             || (!encrypted && len === lengths.REJECT_DECRYPT))
-            && prefix.id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
@@ -263,7 +246,6 @@ class Router extends EventEmitter {
       case control.CHALLENGE:
         if (((encrypted && len === lengths.CHALLENGE_ENCRYPT)
             || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
-            && prefix.id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
@@ -273,7 +255,6 @@ class Router extends EventEmitter {
         if (((encrypted && len === lengths.ACCEPT_ENCRYPT)
             || (!encrypted && len === lengths.ACCEPT_DECRYPT))
             && this.allowIncoming
-            && prefix.id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
@@ -291,8 +272,12 @@ class Router extends EventEmitter {
 
     // Extract basic header values
     // TODO const rest = msg.slice(lengths.PACKET_PREFIX);
-    const conn = this.getId(prefix.id);
+    const conn = this.getId(id);
+    console.log('Conn: ' + String(conn));
+    exit(1);
     if (conn) {
+      //const offset = lengths.CONTROL + lengths.ID;
+      //const sequence = buf.slice(offset, offset + lengths.SEQUENCE);
       // TODO pass through firewall
       // TODO decrypt
       // TODO pass along to connection
@@ -331,6 +316,7 @@ class Router extends EventEmitter {
   }
 
   socketClose() {
+    console.log('socket close router');
     switch (this.state) {
       case State.START:
         {
@@ -341,8 +327,12 @@ class Router extends EventEmitter {
         break;
       case State.LISTEN:
         {
-          this.state = State.HARDSTOP;
-          this.closeConnections(0);
+          this.disconnect(0);
+        }
+        break;
+      case State.DISCONNECT:
+        {
+          this.state = State.END;
         }
         break;
       default:
@@ -355,36 +345,43 @@ class Router extends EventEmitter {
   }
 
   stop(graceMs) {
+    if (!Number.isInteger(graceMs)) {
+      graceMs = timeouts.DEFAULT_GRACE;
+    }
+
+    this.disconnect(graceMs);
+  }
+
+  disconnect(graceMs) {
+    console.log('stop router');
     switch (this.state) {
       case State.CREATE:
-        {
-          this.state = State.END;
-          this.cleanup();
-        }
-        break;
       case State.START:
         {
           this.state = State.END;
-          this.cleanup();
+          this.cleanupListeners();
         }
         break;
       case State.LISTEN:
         {
+          console.log('router listening');
           this.state = State.DISCONNECT;
-          this.closeConnections(graceMs);
+          this.signalDisconnect(graceMs);
         }
         break;
       default:
         {
-          const err = new Error('Invalid attempt to stop');
+          const err = new Error('Invalid attempt to disconnect');
           this.emit('error', err);
         }
         break;
     }
   }
 
-  closeConnections(graceMs) {
-    const router = this;
+  signalDisconnect(graceMs) {
+    if (!Number.isInteger(graceMs)) {
+      graceMs = 0;
+    }
 
     function signalSoftDisconnect(conn/* Unused: id, map */) {
       conn.stop();
@@ -395,20 +392,29 @@ class Router extends EventEmitter {
     }
 
     function handleDisconnectTimeout(router) {
+      console.log('hard disconnect router');
       delete router.disconnectTimeout;
       router.state = State.END;
       router.map.forEach(signalHardDisconnect);
       router.map = null;
-      this.cleanup();
+      this.socket.close();
     }
 
-    if (router.socket.isClosed() || !router.map.size) {
-      router.state = State.END;
-      this.cleanup();
+    if (this.socket.isClosed()) {
+      this.state = State.END;
+      this.cleanupListeners();
+      this.map.forEach(signalHardDisconnect);
+      this.map.clear();
+    }
+    else if (!this.map.size) {
+      this.map.forEach(signalHardDisconnect);
+      this.map.clear();
+      this.socket.close();
     }
     else {
-      router.map.forEach(signalSoftDisconnect);
-      router.disonnectTimeout = setTimeout(handleDisconnectTimeout, graceMs, router);
+      console.log('soft disconnect router');
+      this.map.forEach(signalSoftDisconnect);
+      this.disconnectTimeout = setTimeout(handleDisconnectTimeout, graceMs, this);
     }
   }
 

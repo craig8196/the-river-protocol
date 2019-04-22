@@ -20,7 +20,7 @@ const shared = require('./shared.js');
  * Encode prefix.
  */
 function mkPrefix(buf, encrypted, c, id, sequence) {
-  if (buf.length < lengths.PACKET_PREFIX) {
+  if (buf.length < lengths.PREFIX) {
     return 0;
   }
 
@@ -45,7 +45,9 @@ function mkPrefix(buf, encrypted, c, id, sequence) {
  * Encode unencrypted open information.
  */
 function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
-  if (buf.length < lengths.OPEN_DECRYPT) {
+  console.log(buf.length);
+  console.log(lengths.OPEN_DATA);
+  if (buf.length < lengths.OPEN_DATA) {
     return 0;
   }
 
@@ -397,10 +399,10 @@ class Conn extends EventEmitter {
    */
   get umtu() {
     if (this.encrypted) {
-      return this.effmtu - lengths.PACKET_PREFIX - lengths.BOX_PADDING - lengths.STREAM_DATA;
+      return this.effmtu - lengths.PREFIX - lengths.BOX_PADDING - lengths.STREAM_DATA;
     }
     else {
-      return this.effmtu - lengths.PACKET_PREFIX - lengths.STREAM_DATA;
+      return this.effmtu - lengths.PREFIX - lengths.STREAM_DATA;
     }
   }
 
@@ -410,45 +412,6 @@ class Conn extends EventEmitter {
    */
   get ummu() {
     return this.umtu * lengths.MAX_FRAGMENT;
-  }
-
-  /**
-   * The input buffers may differ in size from the output buffers.
-   */
-  getInputBuffer(min) {
-    return Buffer.allocUnsafe(min);
-  }
-
-  /**
-   * Eventually we'll want to recycle buffers during high load periods.
-   */
-  recycleInputBuffer(/* buf */) {
-  }
-
-  /**
-   * Get a recycled buffer or a newly allocated buffer.
-   * @return {Buffer} The length is the maximum that can be sent.
-   */
-  getBuffer() {
-    if (this.buffers.length) {
-      return this.buffers.pop();
-    }
-    else {
-      return Buffer.allocUnsafe(this.effmtu);
-    }
-  }
-
-  /**
-   * Recycle the buffer. During times of lower use, discard every 8th buffer.
-   */
-  recycleBuffer(buf) {
-    this.bufferKeep = (1 + this.bufferKeep) & 0x07;
-    if (buf.length === this.effmtu && this.bufferKeep) {
-      this.buffers.push(buf);
-    }
-    else {
-      // Let garbage collection pick it up.
-    }
   }
 
   get sequence() {
@@ -590,44 +553,49 @@ class Conn extends EventEmitter {
     }
   }
 
-  sendOpen() {
-    const conn = this;
+  sendOpen(cb) {
+    return false;
+    const bufAllocLen = lengths.PREFIX
+                        + (this.peerPublicKeyOpen ? lengths.SEAL_PADDING : 0)
+                        + lengths.OPEN_DATA;
+    const buf = Buffer.allocUnsafe(bufAllocLen);
 
-    function sendOpenCallback() {
-      conn.recycleBuffer(sendBuf);
-    }
-
-    const buf = this.getBuffer();
-    
-    let len = 0;
-    if (this.encrypted) {
-      len = mkOpen(buf, this.id, this.timestamp, version, this.nonce, this.keys.publicKey);
-    }
-    else {
-      len = mkOpen(buf, this.id, this.timestamp, version, null, null);
-    }
+    let len = mkPrefix(buf, !!this.peerPublicKeyOpen, control.OPEN, 0, this.sequence);
 
     if (!len) {
+      console.log('here1');
       return false;
     }
 
-    const sendBuf = this.getBuffer();
+    let bufTmp = null;
+    if (this.peerPublicKeyOpen) {
+      bufTmp = Buffer.allocUnsafe(lengths.OPEN_DATA);
+    }
+    else {
+      bufTmp = buf.slice(lengths.PREFIX);
+    }
 
-    let sendLen = mkPrefix(sendBuf, !!this.peerPublicKeyOpen, control.OPEN, 0, this.sequence);
+    if (this.encrypted) {
+      len = mkOpen(bufTmp, this.id, this.timestamp, version, this.nonce, this.keys.publicKey);
+    }
+    else {
+      len = mkOpen(bufTmp, this.id, this.timestamp, version, crypto.NO_NONCE, crypto.NO_KEY);
+    }
 
-    if (!sendLen) {
+    if (!len) {
+      console.log('here2');
       return false;
     }
 
     if (this.peerPublicKeyOpen) {
-      if (!crypto.seal(sendBuf.slice(sendLen), buf.slice(0, len), this.peerPublicKeyOpen)) {
+      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peerPublicKeyOpen)) {
+        console.log('here3');
         return false;
       }
     }
 
-    this.recycleBuffer(buf);
-
-    this.sender.send(sendBuf, sendOpenCallback);
+    this.sender.send(buf, cb);
+    console.log('here4');
     return true;
   }
 
@@ -696,6 +664,8 @@ class Conn extends EventEmitter {
           conn.timeoutOpenHandle = setTimeout(openCycle, timeout, conn, counter, timeout);
         }
         else {
+          const err = new Error('Unable to create/send open message');
+          conn.emit('error', err);
           clearTimeout(conn.timeoutOpenHandle);
           conn.close();
         }
@@ -741,6 +711,10 @@ class Conn extends EventEmitter {
         }
         break;
     }
+  }
+
+  stop() {
+    // Start disconnect process.
   }
 
   close() {

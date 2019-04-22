@@ -28,6 +28,14 @@ class SocketInterface {
     throw new Error('bind unimplemented');
   }
 
+  close() {
+    throw new Error('close unimplemented');
+  }
+
+  isClosed() {
+    throw new Error('isClosed unimplemented');
+  }
+
   mkSender() {
     throw new Error('mkSender unimplemented');
   }
@@ -85,6 +93,7 @@ class UdpSocket extends SocketInterface {
     this._socket = dgram.createSocket(udpType);
     this._port = port;
     this._address = address;
+    this._isClosed = false;
   }
 
   /**
@@ -150,7 +159,12 @@ class UdpSocket extends SocketInterface {
    * Close the underlying socket.
    */
   close() {
+    this._isClosed = true;
     this._socket.close();
+  }
+
+  isClosed() {
+    return this._isClosed;
   }
 
   /**

@@ -54,11 +54,13 @@ server.on('listen', () => {
 
   client.on('connect', () => {
     server.stop();
-    client.stop();
+    client.close();
   });
 
   client.on('error', (err) => {
     console.warn('Client error: ' + String(err));
+    server.stop();
+    client.close();
   });
 
   client.connect({ address: 'localhost', port: 42000 });
@@ -66,6 +68,10 @@ server.on('listen', () => {
 
 server.on('stop', () => {
   console.log('Stopped');
+});
+
+server.on('error', (err) => {
+  console.log('Server error: ' + String(err));
 });
 
 server.start();

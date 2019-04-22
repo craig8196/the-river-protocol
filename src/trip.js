@@ -35,6 +35,7 @@ class Server extends EventEmitter {
   }
 
   stop() {
+    console.log('stop server');
     this._router.stop();
   }
 }
@@ -76,6 +77,7 @@ class Client extends EventEmitter {
     this._router = router;
     this._dest = null;
     this._conn = null;
+    this._isClosed = false;
 
     const client = this;
 
@@ -103,9 +105,6 @@ class Client extends EventEmitter {
     function handleStop() {
       // We're done, emit 'close' and deactivate everything.
       client.emit('close');
-      client._router.off('start', client.handleStart);
-      client._router.off('listen', client.handleListen);
-      client._router.off('stop', client.handleStop);
       client._cleanup();
     }
 
@@ -119,10 +118,15 @@ class Client extends EventEmitter {
   }
 
   _cleanup() {
+    this._router.off('start', this.handleStart);
+    this._router.off('listen', this.handleListen);
+    this._router.off('stop', this.handleStop);
+
     this._isListening = false;
     this._router = null;
     this._dest = null;
     this._conn = null;
+    this._isClosed = true;
   }
 
   /**
@@ -144,11 +148,16 @@ class Client extends EventEmitter {
    * Disconnect and close the underlying socket.
    */
   close() {
-    if (this._isListening) {
-      this._router.stop();
-    }
-    else {
-      this.emit('close');
+    if (!this._isClosed) {
+      this._isClosed = true;
+      console.log('close client');
+      if (this._isListening) {
+        this._router.stop();
+      }
+      else {
+        this.emit('close');
+        this._cleanup();
+      }
     }
   }
 
