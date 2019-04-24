@@ -40,7 +40,7 @@ const lengths = {
   PUBLIC_KEY: crypto.PUBLIC_KEY_BYTES,
   SECRET_KEY: crypto.SECRET_KEY_BYTES,
   BOX_PADDING: crypto.BOX_MAC_BYTES,
-  SEAL_PADDING: crypto.SEAL_BYTES,
+  SEAL_PADDING: crypto.SEAL_MAC_BYTES,
 
   UUID: 16,
   STREAM: 2,
@@ -55,6 +55,8 @@ const lengths = {
   UDP_MTU_REC: 1400,
   UDP_MTU_MAX: 1500,
   UINT64: 8,
+
+  WINDOW: 256,
 };
 /* Use these values for determining our own payload size.
  */

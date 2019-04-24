@@ -36,6 +36,10 @@ class SocketInterface {
     throw new Error('isClosed unimplemented');
   }
 
+  mkKey(/* rinfo */) {
+    throw new Error('mkKey unimplemented');
+  }
+
   mkSender() {
     throw new Error('mkSender unimplemented');
   }
@@ -165,6 +169,10 @@ class UdpSocket extends SocketInterface {
 
   isClosed() {
     return this._isClosed;
+  }
+
+  mkKey(rinfo) {
+    return String(rinfo.address) + ':' + String(rinfo.port);
   }
 
   /**

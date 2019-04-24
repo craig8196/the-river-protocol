@@ -1,6 +1,44 @@
 
 const trip = require('./src/trip.js');
 
+const serverSocket = trip.mkSocket({ port: 42000 });
+const server = trip.mkServer(serverSocket, { allowUnsafeOpen: true });
+
+server.on('start', () => {
+  console.log('Server starting up...');
+});
+
+server.on('listen', () => {
+  console.log('Ready to accept connections.');
+
+  const clientSocket = trip.mkSocket();
+  const client = trip.mkClient(clientSocket);
+
+  client.on('connect', () => {
+    server.stop();
+    client.close();
+  });
+
+  client.on('error', (err) => {
+    console.warn('Client error: ' + String(err));
+    server.stop();
+    client.close();
+  });
+
+  client.connect({ address: 'localhost', port: 42000 });
+});
+
+server.on('stop', () => {
+  console.log('Stopped');
+});
+
+server.on('error', (err) => {
+  console.log('Server error: ' + String(err));
+});
+
+server.start();
+
+
 /*
 const keys = trip.mkKeyPair();
 console.log(keys);
@@ -38,42 +76,4 @@ console.log(buf);
 const t = Long.fromBytesBE(buf, true);
 console.log(t.toString());
 */
-
-const serverSocket = trip.mkSocket({ port: 42000 });
-const server = trip.mkServer(serverSocket, {});
-
-server.on('start', () => {
-  console.log('Server starting up...');
-});
-
-server.on('listen', () => {
-  console.log('Ready to accept connections.');
-
-  const clientSocket = trip.mkSocket();
-  const client = trip.mkClient(clientSocket);
-
-  client.on('connect', () => {
-    server.stop();
-    client.close();
-  });
-
-  client.on('error', (err) => {
-    console.warn('Client error: ' + String(err));
-    server.stop();
-    client.close();
-  });
-
-  client.connect({ address: 'localhost', port: 42000 });
-});
-
-server.on('stop', () => {
-  console.log('Stopped');
-});
-
-server.on('error', (err) => {
-  console.log('Server error: ' + String(err));
-});
-
-server.start();
-
 

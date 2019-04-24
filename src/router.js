@@ -35,6 +35,7 @@ State.initEnum([
  * - Bad OPEN request
  */
 class Router extends EventEmitter {
+  // TODO document
   constructor(socket, options) {
     super();
 
@@ -44,6 +45,7 @@ class Router extends EventEmitter {
 
     this.socket = socket;
     this.map = new Map();
+    this.addresses = new Map();
 
     this.keys = options.keys;
     this.maxConnections = options.maxConnections;
@@ -112,7 +114,7 @@ class Router extends EventEmitter {
    * @return {number} Non-zero on success, zero otherwise.
    */
   newId() {
-    if (this.state === State.LISTEN) {
+    if (this.state === State.LISTEN && this.map.size < this.maxConnections) {
       let id = crypto.mkId();
       let count = 1;
       const maxTry = 30;
@@ -143,24 +145,32 @@ class Router extends EventEmitter {
    * @return {Conn}
    */
   getId(id) {
-    const conn = this.map.get(id);
-    if (conn) {
-      return conn;
+    if (id) {
+      return this.map.getId(id);
     }
     else {
-      // TODO return the prepared conn object
-      // TODO create default/dummy rejection conn objects for different situations
       return null;
     }
   }
 
   setId(id, conn) {
-    if (conn) {
+    if (id) {
       this.map.set(id, conn);
     }
-    else {
-      this.map.delete(id);
-    }
+  }
+
+  delId(id) {
+    this.map.delete(id);
+  }
+
+  setAddress(rinfo, conn) {
+    const key = this.socket.mkKey(rinfo);
+    this.addresses[key] = conn;
+  }
+
+  getAddress(rinfo) {
+    const key = this.socket.mkKey(rinfo);
+    return this.addresses[key];
   }
 
   start() {
@@ -214,21 +224,26 @@ class Router extends EventEmitter {
     const id = msg.readUInt32BE(lengths.CONTROL);
 
     // Second, check that the control character and specific length are correct
-    const c = msg[0];
+    const c = msg[0] & control.MASK;
+    console.log('Control: ' + c);
     const encrypted = !!(c & control.ENCRYPTED);
     let isValid = false;
     switch (c & control.MASK) {
       case control.STREAM:
         if ((encrypted && len >= lengths.STREAM_ENCRYPT)
             || (!encrypted && len >= lengths.STREAM_DECRYPT)
+            && id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
         }
         break;
       case control.OPEN:
+        console.log(lengths.OPEN_ENCRYPT);
+        console.log(lengths.OPEN_DECRYPT);
         if (((encrypted && len === lengths.OPEN_ENCRYPT)
             || (!encrypted && len === lengths.OPEN_DECRYPT))
+            && !id
             && this.allowIncoming
             && (encrypted || this.allowUnsafeOpen))
         {
@@ -238,6 +253,7 @@ class Router extends EventEmitter {
       case control.REJECT:
         if (((encrypted && len === lengths.REJECT_ENCRYPT)
             || (!encrypted && len === lengths.REJECT_DECRYPT))
+            && id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
@@ -246,6 +262,7 @@ class Router extends EventEmitter {
       case control.CHALLENGE:
         if (((encrypted && len === lengths.CHALLENGE_ENCRYPT)
             || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
+            && id
             && (encrypted || this.allowUnsafePacket))
         {
           isValid = true;
@@ -254,6 +271,7 @@ class Router extends EventEmitter {
       case control.ACCEPT:
         if (((encrypted && len === lengths.ACCEPT_ENCRYPT)
             || (!encrypted && len === lengths.ACCEPT_DECRYPT))
+            && id
             && this.allowIncoming
             && (encrypted || this.allowUnsafePacket))
         {
@@ -265,27 +283,56 @@ class Router extends EventEmitter {
     }
 
     if (!isValid) {
-      const err = new Error('Invalid packet type from: ' + String(rinfo));
+      const err = new Error('Invalid packet type from: ' + JSON.stringify(rinfo));
       this.emit('error', err);
       return;
     }
 
     // Extract basic header values
     // TODO const rest = msg.slice(lengths.PACKET_PREFIX);
-    const conn = this.getId(id);
-    console.log('Conn: ' + String(conn));
-    exit(1);
+    const conn = id ? this.getId(id) : null;
+    const seq = msg.slice(lengths.CONTROL, lengths.CONTROL + lengths.SEQUENCE);
     if (conn) {
       //const offset = lengths.CONTROL + lengths.ID;
-      //const sequence = buf.slice(offset, offset + lengths.SEQUENCE);
       // TODO pass through firewall
       // TODO decrypt
       // TODO pass along to connection
     }
-    else {
-      // TODO handle case of non-exist
-      return false;
+    else if (c === control.OPEN) {
+      let connection = this.getAddress(rinfo);
+      if (!connection) {
+        const newId = this.newId();
+        if (newId) {
+          connection = new Conn(newId);
+          connection.setSender(this.socket.mkSender(rinfo));
+          this.setId(newId, connection);
+          this.setAddress(rinfo, connection);
+        }
+      }
+
+      if (connection) {
+        const buf = connection.firewall(msg.slice(lengths.PREFIX), seq, c, encrypted);
+        if (buf) {
+          connection.handleOpenPacket(buf, this.allowUnsafePacket);
+        }
+        else {
+          const err = new Error('Packet failed to pass firewall from: ' + JSON.stringify(rinfo));
+          this.emit('error', err);
+          // TODO error
+          return;
+        }
+      }
+      else {
+        // TODO reply with rejectMessage
+      }
     }
+    else {
+      /* Error, ignore. */
+      const err = new Error('Invalid packet referencing non-existant connection');
+      this.emit('error', err);
+    }
+
+    return;
   }
 
   socketMessage(message, rinfo) {
@@ -444,7 +491,7 @@ class Router extends EventEmitter {
 
     const promise = new Promise((resolve, reject) => {
       const id = router.newId();
-      if (id) {
+      if (id && router.allowOutgoing) {
         console.log('id = ' + String(id));
         try {
           // Do we need to make the sender before the id?
@@ -454,7 +501,7 @@ class Router extends EventEmitter {
             resolve(conn);
           });
           conn.on('error', (err) => {
-            router.setId(id, null);
+            router.delId(id);
             reject(err);
           });
           conn.open(router.socket.mkSender(dest), options);
@@ -465,7 +512,13 @@ class Router extends EventEmitter {
         }
       }
       else {
-        const err = new Error('Could not generate a unique ID');
+        let err = null;
+        if (!id) {
+          err = new Error('Could not generate a unique ID');
+        }
+        else {
+          err = new Error('Router does not allow out-going connections.');
+        }
         reject(err);
       }
     });

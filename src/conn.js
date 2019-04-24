@@ -20,12 +20,9 @@ const shared = require('./shared.js');
  * Encode prefix.
  */
 function mkPrefix(buf, encrypted, c, id, sequence) {
-  if (buf.length < lengths.PREFIX) {
-    return 0;
-  }
-
   let offset = 0;
   if (encrypted) {
+    console.log('Encrypted!!!');
     buf[0] = c | control.ENCRYPTED;
   }
   else {
@@ -76,22 +73,23 @@ function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
  * @return {boolean} True if successful, false otherwise.
  */
 function unOpen(out, buf) {
-  if (buf.length !== lengths.OPEN_DECRYPT) {
+  if (buf.length !== lengths.OPEN_DATA) {
     return false;
   }
 
   let offset = 0;
   out.id = buf.readUInt32BE(offset);
   offset += lengths.ID;
+
   out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
   offset += lengths.TIMESTAMP;
   out.version = buf.readUInt16BE(offset);
   offset += lengths.VERSION;
-  out.nonce = Buffer.allocUnsafe(lengths.NONCE);
+  out.nonce = Buffer.allocUnsafeSlow(lengths.NONCE);
   buf.copy(out.nonce, 0, offset, offset + lengths.NONCE);
   offset += lengths.NONCE;
-  out.peerPublicKey = Buffer.allocUnsafe(lengths.PUBLIC_KEY);
-  buf.copy(out.peerPublicKey, 0, offset, offset + lengths.PUBLIC_KEY);
+  out.publicKey = Buffer.allocUnsafeSlow(lengths.PUBLIC_KEY);
+  buf.copy(out.publicKey, 0, offset, offset + lengths.PUBLIC_KEY);
 
   return true;
 }
@@ -202,166 +200,6 @@ State.initEnum([
   'DISCONNECT',
   'END'
 ]);
-/*
-  CHALLENGE: {
-    transition(transType, conn, data) {
-      switch (transType) {
-        case Trans.ACCEPT:
-          if (unAccept(data.data)) {
-            conn.state = State.CONNECT;
-          }
-          else {
-            const err = new Error('Invalid ACCEPT message... discarding');
-            conn.emit('error', err);
-          }
-          break;
-        case Trans.STOP:
-          conn.state = State.END;
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            conn.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  ACCEPT: {
-    transition(transType, conn, data) {
-      switch (transType) {
-        case Trans.MESSAGE:
-        case Trans.PING:
-          conn.state = State.CONNECT;
-          conn.state.transition(transType, conn, data);
-          break;
-        case Trans.REJECT:
-          {
-            const out = {};
-            if (unReject(out, data.data, conn.peerTimestamp)) {
-              conn.peerTimestamp = out.timestamp;
-              // TODO we're rejected
-            }
-            else {
-              const err = new Error('Invalid REJECT message... discarding');
-              conn.emit('error', err);
-            }
-          }
-          break;
-        case Trans.STOP:
-          conn.state = State.DISCONNECT;
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            conn.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  CONNECT: {
-    enter(conn) {
-      conn.emit('connect');
-      // TODO start ping immediately to better determine rtt and mtu?
-    },
-
-    transition(transType, conn, data) {
-      switch (transType) {
-        case Trans.STREAM:
-          if (data.encrypted) {
-            const len = data.length - lengths.BOX_PADDING;
-            const buf = conn.getInputBuffer(len);
-            const nonce = conn.getNonceScratch();
-            nonce[0] = (nonce[0] + data.control) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 1] = (nonce[lengths.NONCE - 1] + data.seq[0]) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 2] = (nonce[lengths.NONCE - 2] + data.seq[1]) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 3] = (nonce[lengths.NONCE - 3] + data.seq[2]) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 4] = (nonce[lengths.NONCE - 4] + data.seq[3]) & control.BYTE_MASK;
-            crypto.unbox(buf, data.data, nonce, conn.peerPublicKey, conn.peerSecretKey);
-            data.recycle = buf;
-            data.data = buf.slice(0, len);
-          }
-          if (unStream(data.data)) {
-            // TODO handle stream data and detect malicious breach of protocol
-          }
-          else {
-            const err = new Error('Invalid STREAM message... discarding');
-            conn.emit('error', err);
-          }
-          break;
-        case Trans.PING:
-          if (unPing(data.data)) {
-            // TODO handle ping
-          }
-          else {
-            const err = new Error('Invalid PING message... discarding');
-            conn.emit('error', err);
-          }
-          break;
-        case Trans.STOP:
-          conn.state = State.DISCONNECT;
-          break;
-          // TODO handle underlying socket disconnecting?
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            conn.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  DISCONNECT: {
-      // TODO disconnect as nicely as possible
-      // TODO notify all streams
-      // TODO cleanup anything remaining
-    transition(transType, conn, data) {
-      switch (transType) {
-        case Trans.STREAM:
-          if (unStream(data.data)) {
-            // TODO handle stream data and detect malicious breach of protocol
-          }
-          else {
-            const err = new Error('Invalid STREAM message... discarding');
-            conn.emit('error', err);
-          }
-          break;
-        case Trans.PING:
-          if (unPing(data.data)) {
-            // TODO handle ping
-          }
-          else {
-            const err = new Error('Invalid PING message... discarding');
-            conn.emit('error', err);
-          }
-          break;
-        default:
-          {
-            const err = new Error('Invalid transition attempt: ' + String(transType));
-            conn.emit('error', err);
-          }
-          break;
-      }
-    }
-  },
-
-  END: {
-    enter(conn) {
-      conn.emit('end');
-      // TODO notify owner
-    },
-
-    transition(transType, conn) {
-      // We're done, reject any further transitions
-      let err = new Error('Invalid transition attempt: ' + String(transType));
-      conn.emit('error', err);
-    }
-  },
-  */
 
 class Conn extends EventEmitter {
   constructor(id) {
@@ -384,11 +222,21 @@ class Conn extends EventEmitter {
     this.maxmtu = lengths.UDP_MTU_DATA_MAX;
 
     this.sequence = 0;
-    this.sequenceWindow = lengths.WINDOW_REC;
+    this.sequenceWindow = lengths.WINDOW;
     this.timeoutOpenMs = timeouts.OPEN_TIMEOUT_REC;
 
-    this.peerPublicKeyOpen = null;
-    this.peerMinSequence = 0;
+    this.peer = {};
+    this.peer.publicKeyOpen = null;
+    this.peer.minSequence = -1;
+    this.peer.midSequence = -1;
+    this.peer.maxSequence = -1;
+
+    this.flagPeerSequence(0);
+    console.log('sequences: ' + JSON.stringify(this.peer));
+  }
+
+  setSender(sender) {
+    this.sender = sender;
   }
 
   // TODO allow the router to set the window
@@ -422,32 +270,44 @@ class Conn extends EventEmitter {
     this._sequence = val;
   }
   
-  seenPeerSequence(seq) {
-    //TODO
+  validatePeerSequence(seq) {
+    console.log(seq);
+    console.log(JSON.stringify(this.peer));
+    if (seq < this.peer.minSequence || seq > this.peer.maxSequence) {
+      return false;
+    }
+
+    return true;
   }
 
-  hasPeerSequence(seq) {
-    // TODO
-    return false;
+  flagPeerSequence(seq) {
+    if (seq > this.peer.midSequence) {
+      this.peer.minSequence = seq - this.sequenceWindow;
+      this.peer.midSequence = seq;
+      this.peer.maxSequence = seq + this.sequenceWindow;
+    }
   }
 
   /**
    * Protect ourselves through encryption and from packet replay attacks.
+   * @param {Buffer} buf - The incoming buffer slice.
+   * @param {Buffer} seq - The binary sequence slice.
+   * @param {integer} c - The control number.
+   * @param {boolean} encrypted - Whether or not the buffer is encrypted.
    * @return {Buffer} Decrypted buffer if no fishy business detected; null otherwise.
    */
-  firewall(buf, seq, c, encrypted, decryptBuf) {
+  firewall(buf, seq, c, encrypted) {
     const sequence = seq.readUInt32BE(0);
 
-    if (sequence < this.peerMinSequence) {
-      return null;
-    }
+    console.log('seq: ' + String(sequence));
 
-    if (this.hasPeerSequence(sequence)) {
+    if (!this.validatePeerSequence(sequence)) {
       return null;
     }
 
     if (encrypted) {
       switch (c) {
+        /*
         case control.STREAM:
         case control.ACCEPT:
         case control.PING:
@@ -472,20 +332,23 @@ class Conn extends EventEmitter {
             buf = decrypteBuf.slice(0, len);
           }
           break;
+          */
         case control.OPEN:
-        case control.REJECT:
-        case control.CHALLENGE:
+        //case control.REJECT:
+        //case control.CHALLENGE:
           {
+            const decryptBuf = Buffer.allocUnsafe(lengths.OPEN_DATA);
+            const pk = this.router.keys.publicKey;
+            const sk = this.router.keys.secretKey;
+
             // Unseal message.
-            if (crypto.unseal(decryptBuf, buf, this.publicKeyOpen, this.secretKeyOpen)) {
-            }
-            else {
+            if (!crypto.unseal(decryptBuf, buf, pk, sk)) {
+              throw new Error('bad encrypt');
               return null;
             }
 
             // Set return buffer.
-            const len = buf.length - lengths.SEAL_PADDING;
-            buf = decryptBuf.splice(0, len);
+            buf = decryptBuf;
           }
           break;
         default:
@@ -493,18 +356,54 @@ class Conn extends EventEmitter {
       }
     }
 
-    this.seenPeerSequence(sequence);
+    this.flagPeerSequence(sequence);
 
     return buf;
   }
 
-  handleOpenPacket(buf) {
+  handleOpenPacket(buf, allowUnsafePacket) {
     switch (this.state) {
       case State.CREATE:
         {
           const out = {};
+          console.log(buf.length);
+          console.log(lengths.OPEN_DATA);
           if (unOpen(out, buf)) {
-            //
+            if (!out.id) {
+              const err = new Error('Invalid peer id');
+              this.emit('error', err);
+              break;
+            }
+
+            // TODO check timestamp
+
+            if (version !== out.version) {
+              const err = new Error('Invalid peer version');
+              this.emit('error', err);
+              break;
+            }
+
+            if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
+              if (!allowUnsafePacket) {
+                const err = new Error('Unsafe credentials');
+                this.emit('error', err);
+                break;
+              }
+            }
+            else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
+              const err = new Error('Invalid credentials');
+              this.emit('error', err);
+              break;
+            }
+
+            this.peer.id = out.id;
+            this.peer.timestamp = out.timestamp;
+            this.peer.version = out.version;
+            this.peer.nonce = out.nonce;
+            this.peer.publicKey = out.publicKey;
+            console.log(JSON.stringify(this.peer));
+            //HERE
+            exit(1);
           }
           else {
             const err = new Error('Invalid open request');
@@ -528,13 +427,13 @@ class Conn extends EventEmitter {
         {
           const out = {};
           if (unChallenge(out, buf)) {
-            this.peerId = out.peerId;
+            this.peer.id = out.peer.id;
             this.peerTimestamp = out.timestamp;
             this.peerVersion = out.version;
             this.peerMaxStreams = out.maxStreams;
             this.peerMaxCurrency = out.maxCurrency;
             this.peerNonce = out.nonce;
-            this.peerPublicKey = out.publicKey;
+            this.peer.publicKey = out.publicKey;
             this.state = State.ACCEPT;
             // TODO send the accept packet
           }
@@ -554,13 +453,12 @@ class Conn extends EventEmitter {
   }
 
   sendOpen(cb) {
-    return false;
     const bufAllocLen = lengths.PREFIX
-                        + (this.peerPublicKeyOpen ? lengths.SEAL_PADDING : 0)
+                        + (this.peer.publicKeyOpen ? lengths.SEAL_PADDING : 0)
                         + lengths.OPEN_DATA;
     const buf = Buffer.allocUnsafe(bufAllocLen);
 
-    let len = mkPrefix(buf, !!this.peerPublicKeyOpen, control.OPEN, 0, this.sequence);
+    let len = mkPrefix(buf, !!this.peer.publicKeyOpen, control.OPEN, 0, this.sequence);
 
     if (!len) {
       console.log('here1');
@@ -568,7 +466,7 @@ class Conn extends EventEmitter {
     }
 
     let bufTmp = null;
-    if (this.peerPublicKeyOpen) {
+    if (this.peer.publicKeyOpen) {
       bufTmp = Buffer.allocUnsafe(lengths.OPEN_DATA);
     }
     else {
@@ -587,8 +485,8 @@ class Conn extends EventEmitter {
       return false;
     }
 
-    if (this.peerPublicKeyOpen) {
-      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peerPublicKeyOpen)) {
+    if (this.peer.publicKeyOpen) {
+      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKeyOpen)) {
         console.log('here3');
         return false;
       }
@@ -617,7 +515,7 @@ class Conn extends EventEmitter {
           if (options && options.publicKey) {
             // TODO need to copy externally passed buffers for added reliability?
             // Or in the mk functions perform the duplication.
-            this.peerPublicKeyOpen = options.publicKey;
+            this.peer.publicKeyOpen = options.publicKey;
           }
 
           // Encrypt packets.
@@ -694,8 +592,8 @@ class Conn extends EventEmitter {
           conn.emit('challenge');
 
           conn.timestamp = shared.mkTimeNow();
-          const buf = mkChallenge(conn.peerId, conn.sequence,
-            conn.peerPublicKey,
+          const buf = mkChallenge(conn.peer.id, conn.sequence,
+            conn.peer.publicKey,
             conn.id, conn.timestamp, conn.owner.version,
             conn.maxSequence, conn.maxCurrency,
             conn.nonce, conn.keys.publicKey);
