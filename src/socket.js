@@ -77,7 +77,7 @@ class UdpSender extends SenderInterface {
 
   /**
    * Send the buffer as a packet to the destination.
-   * @param {Buffer|[Buffer]} msg - The buffer/buffers that comprise the packet.
+   * @param {Buffer} msg - The buffer/buffers that comprise the packet.
    * @param {Function} cb - Called when the data was sent so the buffer can be reused.
    */
   send(msg, cb) {
