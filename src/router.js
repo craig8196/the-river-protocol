@@ -45,6 +45,8 @@ class Router extends EventEmitter {
 
     this.socket = socket;
     this.map = new Map();
+    // TODO determine if this could be hash map attack vector...
+    // TODO determine how timeouts are handled (should be shorter during busier periods)
     this.addresses = new Map();
 
     this.keys = options.keys;
@@ -239,8 +241,8 @@ class Router extends EventEmitter {
         }
         break;
       case control.OPEN:
-        console.log(lengths.OPEN_ENCRYPT);
-        console.log(lengths.OPEN_DECRYPT);
+        console.log('e: ' + lengths.SEAL_PADDING);
+        console.log('d: ' + lengths.OPEN_DECRYPT);
         if (((encrypted && len === lengths.OPEN_ENCRYPT)
             || (!encrypted && len === lengths.OPEN_DECRYPT))
             && !id
@@ -302,12 +304,10 @@ class Router extends EventEmitter {
       let connection = this.getAddress(rinfo);
       if (!connection) {
         const newId = this.newId();
-        if (newId) {
-          connection = new Conn(newId);
-          connection.setSender(this.socket.mkSender(rinfo));
-          this.setId(newId, connection);
-          this.setAddress(rinfo, connection);
-        }
+        connection = new Conn(newId);
+        connection.setSender(this.socket.mkSender(rinfo));
+        this.setId(newId, connection);
+        this.setAddress(rinfo, connection);
       }
 
       if (connection) {
@@ -316,23 +316,20 @@ class Router extends EventEmitter {
           connection.handleOpenPacket(buf, this.allowUnsafePacket);
         }
         else {
-          const err = new Error('Packet failed to pass firewall from: ' + JSON.stringify(rinfo));
-          this.emit('error', err);
-          // TODO error
+          this.emit('error', new Error('Packet failed to pass firewall from: ' + JSON.stringify(rinfo)));
           return;
         }
       }
       else {
-        // TODO reply with rejectMessage
+        /* Connection object will automatically reject as too busy. */
+        this.emit('error', new Error('Unable to create a connection object'));
       }
     }
     else {
       /* Error, ignore. */
-      const err = new Error('Invalid packet referencing non-existant connection');
-      this.emit('error', err);
+      this.emit('error', new Error('Invalid packet referencing non-existant connection'));
+      return;
     }
-
-    return;
   }
 
   socketMessage(message, rinfo) {

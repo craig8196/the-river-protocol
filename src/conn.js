@@ -10,7 +10,7 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 const Long = require('long');
 /* Custom */
-const { version, timeouts, lengths, control, reject } = require('./spec.js');
+const { version, timeouts, lengths, limits, control, reject } = require('./spec.js');
 const crypto = require('./crypto.js');
 const shared = require('./shared.js');
 'use strict';
@@ -41,7 +41,7 @@ function mkPrefix(buf, encrypted, c, id, sequence) {
 /**
  * Encode unencrypted open information.
  */
-function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
+function mkOpen(buf, id, timestamp, version, currency, streams, messages, nonce, publicKey) {
   console.log(buf.length);
   console.log(lengths.OPEN_DATA);
   if (buf.length < lengths.OPEN_DATA) {
@@ -60,6 +60,12 @@ function mkOpen(buf, id, timestamp, version, nonce, publicKey) {
   console.log(offset);
   buf.writeUInt16BE(version, offset);
   offset += lengths.VERSION;
+  buf.writeUInt32BE(currency, offset);
+  offset += lengths.CURRENCY;
+  buf.writeUInt32BE(streams, offset);
+  offset += lengths.STREAMS;
+  buf.writeUInt32BE(messages, offset);
+  offset += lengths.MESSAGE;
   nonce.copy(buf, offset, 0, lengths.NONCE);
   offset += lengths.NONCE;
   publicKey.copy(buf, offset, 0, lengths.PUBLIC_KEY);
@@ -80,11 +86,16 @@ function unOpen(out, buf) {
   let offset = 0;
   out.id = buf.readUInt32BE(offset);
   offset += lengths.ID;
-
   out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
   offset += lengths.TIMESTAMP;
   out.version = buf.readUInt16BE(offset);
   offset += lengths.VERSION;
+  out.currency = buf.readUInt32BE(offset);
+  offset += lengths.CURRENCY;
+  out.streams = buf.readUInt32BE(offset);
+  offset += lengths.STREAMS;
+  out.messages = buf.readUInt32BE(offset);
+  offset += lengths.MESSAGE;
   out.nonce = Buffer.allocUnsafeSlow(lengths.NONCE);
   buf.copy(out.nonce, 0, offset, offset + lengths.NONCE);
   offset += lengths.NONCE;
@@ -98,14 +109,7 @@ function unOpen(out, buf) {
  * @return {number} Zero on failure; length written otherwise.
  */
 function mkReject(buf, timestamp, rejectCode, rejectMessage) {
-  let len = lengths.TIMESTAMP + lengths.REJECT_CODE;
-  if (rejectMessage) {
-    if (rejectMessage.length <= lengths.REJECT_MESSAGE) {
-      len += rejectMessage.length;
-    }
-  }
-
-  if (buf.length < len) {
+  if (buf.length < lengths.REJECT_DATA) {
     return 0;
   }
 
@@ -115,37 +119,46 @@ function mkReject(buf, timestamp, rejectCode, rejectMessage) {
   buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
   offset += lengths.TIMESTAMP/2;
   buf.writeUInt16BE(rejectCode, offset);
-  if (rejectMessage && rejectMessage.length) {
-    offset += lengths.REJECT_CODE;
-    rejectMessage.copy(buf, offset);
+  offset += lengths.REJECT_CODE;
+
+  if (rejectMessage) {
+    Buffer.from(rejectMessage, 'utf8').copy(buf, offset, 0);
+    offset += Buffer.byteLength(rejectMessage, 'utf8');
   }
 
-  return len;
+  buf[offset] = 0;
+
+  ++offset;
+
+  return offset;
 }
 
 /**
  * @return {boolean} True on success; false otherwise.
  */
-function unReject(out, buf, prevTimestamp) {
+function unReject(out, buf) {
+  if (buf.length < lengths.REJECT_DATA) {
+    return 0;
+  }
+
   let offset = 0;
-  const timestamp = Long.fromBytesBE(buf.slice(0, lengths.TIMESTAMP));
+  out.timestamp = Long.fromBytesBE(buf.slice(0, lengths.TIMESTAMP));
   offset += lengths.TIMESTAMP;
 
-  if (!prevTimestamp.lessThan(timestamp)) {
+  out.code = buf.readUInt16BE(offset);
+  if (out.code < reject.UNKNOWN || out.code > reject.ERROR) {
     return false;
   }
-
-  const code = buf.readUInt16BE(offset);
-  if (code < reject.UNKNOWN || code > reject.ERROR) {
-    return false;
-  }
-
   offset += lengths.REJECT_CODE;
-  let message = null;
-  if (buf.length > offset) {
+
+  if (buf[buf.length - 1] !== 0) {
+    return false;
+  }
+
+  let message = '';
+  if ((buf.length - 1) > offset) {
     message = buf.toString('utf8', offset, buf.length);
   }
-  out.code = code;
   out.message = message;
   return true;
 }
@@ -154,40 +167,66 @@ const mkChallenge = mkOpen;
 
 const unChallenge = unOpen;
 
-function mkAccept(buf, maxStreams, maxCurrency, nonce) {
-  if (buf.length < lengths.ACCEPT_DECRYPT) {
+function mkAccept(buf, timestamp, nonce) {
+  if (buf.length !== lengths.ACCEPT_DATA) {
     return 0;
   }
 
   let offset = 0;
-  buf.writeUInt16BE(maxStreams, offset);
-  offset += lengths.MAX_STREAMS;
-  buf.writeUInt16BE(maxCurrency, offset);
-  offset += lengths.MAX_CURRENCY;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
   nonce.copy(buf, offset, 0, lengths.NONCE);
-  return lengths.ACCEPT_DECRYPT;
+  offset += lengths.NONCE;
+
+  return offset;
 }
 
-function unAccept(out, buf, expectedNonce) {
-  let offset = 0;
-  const maxStreams = buf.readUInt16BE(offset);
-  offset += lengths.MAX_STREAMS;
-  const maxCurrency = buf.readUInt16BE(offset);
-  offset += lengths.MAX_CURRENCY;
-  const token = buf.slice(offset);
-  if (token !== expectedNonce) {
+function unAccept(out, buf) {
+  if (buf.length !== lengths.ACCEPT_DATA) {
     return false;
   }
 
-  out.maxStreams = maxStreams;
-  out.maxCurrency = maxCurrency;
+  let offset = 0;
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
+  offset += lengths.TIMESTAMP;
+  out.nonce = buf.slice(offset, offset + lengths.NONCE);
+
   return true;
 }
 
-function mkPing(buf) {
+function mkPing(buf, timestamp, rtt, nonce) {
+  if (buf.length !== lengths.PING_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += lengths.TIMESTAMP/2;
+  buf.writeUInt32BE(rtt, offset);
+  offset += lengths.RTT;
+  nonce.copy(buf, offset, 0, lengths.NONCE);
+  offset += lengths.NONCE;
+
+  return offset;
 }
 
 function unPing(out, buf) {
+  if (buf.length !== lengths.PING_DATA) {
+    return false;
+  }
+
+  let offset = 0;
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
+  offset += lengths.TIMESTAMP;
+  out.rtt = buf.readUInt32BE(offset);
+  offset += lengths.RTT;
+  out.nonce = buf.slice(offset, offset + lengths.NONCE);
+
+  return true;
 }
 
 class State extends Enum {}
@@ -214,6 +253,8 @@ class Conn extends EventEmitter {
 
     this.state = State.CREATE;
 
+    this.data = null;
+
     this.buffers = [];
     this.bufferKeep = 0;
 
@@ -223,7 +264,15 @@ class Conn extends EventEmitter {
 
     this.sequence = 0;
     this.sequenceWindow = lengths.WINDOW;
-    this.timeoutOpenMs = timeouts.OPEN_TIMEOUT_REC;
+
+    this.rttMs = timeouts.RTT; /* Average */
+    this.rttTotal = timeouts.RTT;
+    this.rttCount = 1;
+
+    this.limits = {};
+    this.limits.currency = limits.CURRENCY;
+    this.limits.streams = limits.STREAMS;
+    this.limits.messages = limits.MESSAGES;
 
     this.peer = {};
     this.peer.publicKeyOpen = null;
@@ -286,6 +335,10 @@ class Conn extends EventEmitter {
       this.peer.midSequence = seq;
       this.peer.maxSequence = seq + this.sequenceWindow;
     }
+    else {
+      /* I'm not sure if this is a great idea, but we can shrink the window. */
+      ++this.peer.minSequence;
+    }
   }
 
   /**
@@ -334,8 +387,6 @@ class Conn extends EventEmitter {
           break;
           */
         case control.OPEN:
-        //case control.REJECT:
-        //case control.CHALLENGE:
           {
             const decryptBuf = Buffer.allocUnsafe(lengths.OPEN_DATA);
             const pk = this.router.keys.publicKey;
@@ -343,7 +394,24 @@ class Conn extends EventEmitter {
 
             // Unseal message.
             if (!crypto.unseal(decryptBuf, buf, pk, sk)) {
-              throw new Error('bad encrypt');
+              this.emit('error', new Error('Unable to decrypt buffer'));
+              return null;
+            }
+
+            // Set return buffer.
+            buf = decryptBuf;
+          }
+          break;
+        case control.REJECT:
+        //case control.CHALLENGE:
+          {
+            const decryptBuf = Buffer.allocUnsafe(buf.length - lengths.SEAL_PADDING);
+            const pk = this.keys.publicKey;
+            const sk = this.keys.secretKey;
+
+            // Unseal message.
+            if (!crypto.unseal(decryptBuf, buf, pk, sk)) {
+              this.emit('error', new Error('Unable to decrypt buffer'));
               return null;
             }
 
@@ -364,88 +432,203 @@ class Conn extends EventEmitter {
   handleOpenPacket(buf, allowUnsafePacket) {
     switch (this.state) {
       case State.CREATE:
+      case State.CHALLENGE:
         {
           const out = {};
           console.log(buf.length);
           console.log(lengths.OPEN_DATA);
           if (unOpen(out, buf)) {
             if (!out.id) {
-              const err = new Error('Invalid peer id');
-              this.emit('error', err);
+              this.emit('error', new Error('Invalid peer id'));
               break;
             }
 
             // TODO check timestamp
 
             if (version !== out.version) {
-              const err = new Error('Invalid peer version');
-              this.emit('error', err);
+              this.emit('error', new Error('Invalid peer version'));
+              this.sendReject(reject.VERSION);
               break;
             }
 
             if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
               if (!allowUnsafePacket) {
-                const err = new Error('Unsafe credentials');
-                this.emit('error', err);
+                this.emit('error', new Error('Unsafe packets not allowed'));
+                this.sendReject(reject.UNSAFE);
                 break;
               }
             }
             else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
-              const err = new Error('Invalid credentials');
-              this.emit('error', err);
+              this.emit('error', new Error('Invalid credentials'));
+              this.sendReject(reject.INVALID);
               break;
             }
 
             this.peer.id = out.id;
             this.peer.timestamp = out.timestamp;
             this.peer.version = out.version;
+            this.peer.currency = out.currency;
+            this.peer.streamsLimit = out.streams;
+            this.peer.messagesLimit = out.messages;
             this.peer.nonce = out.nonce;
             this.peer.publicKey = out.publicKey;
-            console.log(JSON.stringify(this.peer));
-            //HERE
-            exit(1);
+
+            if (!this.id) {
+              this.emit('error', new Error('Reject due to business'));
+              this.sendReject(reject.BUSY);
+              break;
+            }
+
+            this.challenge();
           }
           else {
-            const err = new Error('Invalid open request');
-            this.emit('error', err);
+            this.emit('error', new Error('Invalid open request'));
             this.end();
           }
         }
         break;
       default:
         {
-          const err = new Error('Unexpected open call');
-          this.emit('error', err);
+          this.emit('error', new Error('Unexpected handle open call'));
         }
         break;
     }
   }
 
-  handleChallengePacket(buf, seq, encrypted) {
+  handleRejectPacket(buf) {
+    /* Any state */
+    const out = {};
+    console.log(buf.length);
+    console.log(lengths.OPEN_DATA);
+    if (unReject(out, buf)) {
+      // TODO check timestamp
+
+      this.emit('reject', out.code, out.message);
+
+      this.cleanup();
+    }
+    else {
+      this.emit('error', new Error('Invalid reject response'));
+    }
+  }
+
+  handleChallengePacket(buf, allowUnsafePacket) {
     switch (this.state) {
       case State.OPEN:
         {
           const out = {};
+          console.log(buf.length);
+          console.log(lengths.OPEN_DATA);
           if (unChallenge(out, buf)) {
-            this.peer.id = out.peer.id;
-            this.peerTimestamp = out.timestamp;
-            this.peerVersion = out.version;
-            this.peerMaxStreams = out.maxStreams;
-            this.peerMaxCurrency = out.maxCurrency;
-            this.peerNonce = out.nonce;
+            if (!out.id) {
+              this.emit('error', new Error('Invalid peer id'));
+              break;
+            }
+
+            // TODO check timestamp
+
+            if (version !== out.version) {
+              this.emit('error', new Error('Invalid peer version'));
+              this.sendReject(reject.VERSION);
+              break;
+            }
+
+            if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
+              if (!allowUnsafePacket) {
+                this.emit('error', new Error('Unsafe packets not allowed'));
+                this.sendReject(reject.UNSAFE);
+                break;
+              }
+            }
+            else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
+              this.emit('error', new Error('Invalid credentials'));
+              this.sendReject(reject.INVALID);
+              break;
+            }
+
+            this.peer.id = out.id;
+            this.peer.timestamp = out.timestamp;
+            this.peer.version = out.version;
+            this.peer.currency = out.currency;
+            this.peer.streamsLimit = out.streams;
+            this.peer.messagesLimit = out.messages;
+            this.peer.nonce = out.nonce;
             this.peer.publicKey = out.publicKey;
-            this.state = State.ACCEPT;
-            // TODO send the accept packet
+
+            if (!this.id) {
+              this.emit('error', new Error('Reject due to business'));
+              this.sendReject(reject.BUSY);
+              break;
+            }
+
+            this.accept();
           }
           else {
-            const err = new Error('Invalid challenge');
-            this.emit('warn', err);
+            this.emit('error', new Error('Invalid open request'));
+            this.end();
           }
         }
         break;
       default:
         {
           const err = new Error('Unexpected challenge packet');
+          this.emit('error', err);
+        }
+        break;
+    }
+  }
+
+  handleAcceptPacket(buf) {
+    switch (this.state) {
+      case State.CHALLENGE:
+        {
+          const out = {};
+          console.log(buf.length);
+          if (unAccept(out, buf)) {
+            if (!this.nonce.equals(out.nonce)) {
+              this.emit('error', new Error('Invalid nonce'));
+              this.sendReject(reject.INVALID);
+              break;
+            }
+
+            this.state = State.CONNECT;
+            this.emit('connect');
+            this.ping();
+          }
+          else {
+            this.emit('error', new Error('Invalid accept request'));
+          }
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected accept packet');
+          this.emit('error', err);
+        }
+        break;
+    }
+  }
+
+  handlePingPacket(buf) {
+    switch (this.state) {
+      case State.ACCEPT:
+      case State.CONNECT:
+        {
+          const out = {};
+
+          if (unPing(out, buf)) {
+            // TODO return if init ping, else disable our ping if matching
+            // TODO delete this.pingNonce once this is over
+            this.state = State.CONNECT;
+          }
+          else {
+            this.emit('error', new Error('Invalid ping request'));
+          }
+        }
+        break;
+      default:
+        {
+          const err = new Error('Unexpected ping packet');
           this.emit('error', err);
         }
         break;
@@ -461,7 +644,6 @@ class Conn extends EventEmitter {
     let len = mkPrefix(buf, !!this.peer.publicKeyOpen, control.OPEN, 0, this.sequence);
 
     if (!len) {
-      console.log('here1');
       return false;
     }
 
@@ -473,27 +655,198 @@ class Conn extends EventEmitter {
       bufTmp = buf.slice(lengths.PREFIX);
     }
 
+    let n = crypto.NO_NONCE;
+    let pk = crypto.NO_KEY;
     if (this.encrypted) {
-      len = mkOpen(bufTmp, this.id, this.timestamp, version, this.nonce, this.keys.publicKey);
-    }
-    else {
-      len = mkOpen(bufTmp, this.id, this.timestamp, version, crypto.NO_NONCE, crypto.NO_KEY);
+      n = this.nonce;
+      pk = this.keys.publicKey;
     }
 
+    len = mkChallenge(bufTmp, this.id, this.timestamp, version,
+      this.limits.currency, this.limits.streams,
+      this.limits.messages, n, pk);
+
     if (!len) {
-      console.log('here2');
       return false;
     }
 
     if (this.peer.publicKeyOpen) {
       if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKeyOpen)) {
+        return false;
+      }
+    }
+
+    this.sender.send(buf, cb);
+    return true;
+  }
+
+  sendReject(rejectCode, message, cb) {
+    let bufAllocLen = this.peer.publicKey ? lengths.REJECT_ENCRYPT : lengths.REJECT_DECRYPT;
+
+    const difference = this.effmtu - bufAllocLen;
+
+    /* Determine how much of the string can be sent. */
+    let messageByteLen = 0;
+    if (message) {
+      messageByteLen = Buffer.byteLength(message, 'utf8');
+      while (messageByteLen > difference) {
+        if (message.length > difference) {
+          message = message.slice(0, difference);
+        }
+        else {
+          message = message.slice(0, message.length/2);
+        }
+        messageByteLen = Buffer.byteLength(message, 'utf8');
+      }
+    }
+
+    bufAllocLen += messageByteLen;
+
+    const buf = Buffer.allocUnsafe(bufAllocLen);
+
+    let len = mkPrefix(buf, !!this.peer.publicKey, control.REJECT, 0, this.sequence);
+
+    if (!len) {
+      return false;
+    }
+
+    let bufTmp = null;
+    if (this.peer.publicKey) {
+      bufTmp = Buffer.allocUnsafe(lengths.REJECT_DATA + messageByteLen);
+    }
+    else {
+      bufTmp = buf.slice(lengths.PREFIX);
+    }
+
+    len = mkReject(bufTmp, this.timestamp, rejectCode, message);
+
+    if (!len) {
+      return false;
+    }
+
+    if (this.peer.publicKey) {
+      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
         console.log('here3');
         return false;
       }
     }
 
     this.sender.send(buf, cb);
-    console.log('here4');
+    return true;
+  }
+
+  sendChallenge(cb) {
+    const bufAllocLen = this.peer.publicKey ? lengths.CHALLENGE_DECRYPT : lengths.CHALLENGE_ENCRYPT;
+    const buf = Buffer.allocUnsafe(bufAllocLen);
+
+    let len = mkPrefix(buf, !!this.peer.publicKey, control.CHALLENGE, 0, this.sequence);
+
+    if (!len) {
+      return false;
+    }
+
+    let bufTmp = null;
+    if (this.peer.publicKey) {
+      bufTmp = Buffer.allocUnsafe(lengths.CHALLENGE_DATA);
+    }
+    else {
+      bufTmp = buf.slice(lengths.PREFIX);
+    }
+
+    let n = crypto.NO_NONCE;
+    let pk = crypto.NO_KEY;
+    if (this.encrypted) {
+      n = this.nonce;
+      pk = this.keys.publicKey;
+    }
+
+    len = mkChallenge(bufTmp, this.id, this.timestamp, version,
+      this.limits.currency, this.limits.streams,
+      this.limits.messages, n, pk);
+
+    if (!len) {
+      return false;
+    }
+
+    if (this.peer.publicKey) {
+      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
+        return false;
+      }
+    }
+
+    this.sender.send(buf, cb);
+    return true;
+  }
+
+  sendAccept(cb) {
+    const bufAllocLen = this.peer.publicKey ? lengths.ACCEPT_DECRYPT : lengths.ACCEPT_ENCRYPT;
+    const buf = Buffer.allocUnsafe(bufAllocLen);
+
+    let len = mkPrefix(buf, !!this.peer.publicKey, control.ACCEPT, 0, this.sequence);
+
+    if (!len) {
+      return false;
+    }
+
+    let bufTmp = null;
+    if (this.peer.publicKey) {
+      bufTmp = Buffer.allocUnsafe(lengths.ACCEPT_DATA);
+    }
+    else {
+      bufTmp = buf.slice(lengths.PREFIX);
+    }
+
+    len = mkAccept(bufTmp, this.timestamp, this.peer.nonce);
+
+    if (!len) {
+      return false;
+    }
+
+    if (this.peer.publicKey) {
+      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
+        return false;
+      }
+    }
+
+    this.sender.send(buf, cb);
+    return true;
+  }
+
+  sendPing(cb) {
+    const bufAllocLen = this.peer.publicKey ? lengths.PING_DECRYPT : lengths.PING_ENCRYPT;
+    const buf = Buffer.allocUnsafe(bufAllocLen);
+
+    let len = mkPrefix(buf, !!this.peer.publicKey, control.PING, 0, this.sequence);
+
+    if (!len) {
+      return false;
+    }
+
+    let bufTmp = null;
+    if (this.peer.publicKey) {
+      bufTmp = Buffer.allocUnsafe(lengths.PING_DATA);
+    }
+    else {
+      bufTmp = buf.slice(lengths.PREFIX);
+    }
+
+    if (!this.pingNonce) {
+      this.pingNonce = crypto.mkNonce(Buffer.allocUnsafe(lengths.NONCE));
+    }
+
+    len = mkPing(bufTmp, this.timestamp, this.rttMs, this.pingNonce);
+
+    if (!len) {
+      return false;
+    }
+
+    if (this.peer.publicKey) {
+      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
+        return false;
+      }
+    }
+
+    this.sender.send(buf, cb);
     return true;
   }
 
@@ -573,7 +926,7 @@ class Conn extends EventEmitter {
       }
     }
 
-    openCycle(this, 0, this.timeoutOpenStart);
+    openCycle(this, 0, (this.rttMs > 200 ? 200 : this.rttMs));
   }
 
   /**
@@ -585,27 +938,68 @@ class Conn extends EventEmitter {
     }
   }
 
+  reject() {
+    this.sendReject(reject.USER);
+  }
+
   challenge() {
     switch (this.state) {
+      case State.CREATE:
       case State.CHALLENGE:
-        if (mkChallenge()) {
-          conn.emit('challenge');
+        {
+          this.state = State.CHALLENGE;
+          this.emit('challenge');
 
-          conn.timestamp = shared.mkTimeNow();
-          const buf = mkChallenge(conn.peer.id, conn.sequence,
-            conn.peer.publicKey,
-            conn.id, conn.timestamp, conn.owner.version,
-            conn.maxSequence, conn.maxCurrency,
-            conn.nonce, conn.keys.publicKey);
-          conn.sender.send(buf);
-        }
-        else {
+          this.startChallenge();
         }
         break;
       default:
         {
-          const err = new Error('Unexpected challenge call');
-          this.emit('error', err)
+          this.emit('error', new Error('Unexpected challenge call'));
+        }
+        break;
+    }
+  }
+
+  startChallenge() {
+    function challengeCycle(conn, counter, timeout) {
+      if (conn.state === State.CHALLENGE) {
+        counter++;
+
+        if (counter === 3) {
+          // TODO set timeout to cleanup connection object
+        }
+        else {
+          if (conn.sendChallenge()) {
+            conn.timeoutChallengeHandle = setTimeout(challengeCycle, timeout, conn, counter, timeout);
+          }
+          else {
+            conn.emit('error', new Error('Unable to create/send open message'));
+            clearTimeout(conn.timeoutChallengeHandle);
+            // TODO clear connection object?
+          }
+        }
+      }
+      else {
+        clearTimeout(conn.timeoutChallengeHandle);
+      }
+    }
+
+    challengeCycle(this, 0, this.rttMs);
+  }
+
+  accept() {
+    switch (this.state) {
+      case State.OPEN:
+        {
+          this.state = State.ACCEPT;
+          this.emit('accept');
+          this.sendAccept();
+        }
+        break;
+      default:
+        {
+          this.emit('error', new Error('Unexpected challenge call'));
         }
         break;
     }
@@ -625,8 +1019,7 @@ class Conn extends EventEmitter {
         break;
       default:
         {
-          const err = new Error('Unexpected close call');
-          this.emit('warn', err)
+          this.emit('error', new Error('Unexpected close call'));
         }
         break;
     }

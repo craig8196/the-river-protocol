@@ -196,6 +196,7 @@ UMTU: User MTU
 1. https://tools.ietf.org/html/rfc8085
 1. https://tools.ietf.org/html/rfc793
 1. https://tools.ietf.org/html/rfc4960
+1. https://tools.ietf.org/html/rfc1122
 1. https://nodejs.org/api/dgram.html
 1. https://gafferongames.com/post/why_cant_i_send_udp_packets_from_a_browser/
 1. https://github.com/nodejs/node-v0.x-archive/issues/1623

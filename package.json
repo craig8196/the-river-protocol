@@ -2,7 +2,7 @@
   "name": "js-trp",
   "version": "0.1.0",
   "description": "The River Protocol (TRP)",
-  "keywords": [],
+  "keywords": ["trp", "udp", "tcp", "river", "protocol", "trip", "network"],
   "author": "Craig Jacobson",
   "license": "MIT",
   "homepage": "https://github.com/craig8196/the-river-protocol",
@@ -16,10 +16,11 @@
   "main": "src/trip.js",
   "scripts": {
     "api": "jsdoc -p --pedantic -d api/ src/*.js",
-    "doc": "jsdoc -R --pedantic -d doc/ src/trip.js",
+    "doc": "jsdoc --pedantic -d doc/ src/trip.js",
     "one": "jest src/crypto.test.js",
     "lint": "eslint src/**.js",
     "test": "jest src/**.test.js",
+    "clean": "rm -rf api/ doc/",
     "coverage": "jest --coverage --collectCoverageFrom=src/**.js"
   },
   "dependencies": {

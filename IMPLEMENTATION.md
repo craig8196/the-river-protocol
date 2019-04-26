@@ -16,7 +16,8 @@ Unfortunately, I don't know how future proof libsodium or NaCL is right now.
 
 
 # Buffers
-Buffer.allocUnsafe is used for performance and should be used for short-term values.
-However, Buffer.allocUnsafeSlow should be used for longer living values.
+Buffer.allocUnsafe is used for performance and should be used for short-term values;
+it slices peices of memory from ~4k sized slabs for speed.
+However, Buffer.allocUnsafeSlow should be used for longer lived values.
 
 

@@ -114,37 +114,42 @@ packet replay and they should be dropped without a second thought.
 | 4 | ID for responses
 | 8 | Timestamp
 | 2 | Version ID
+| 2 | Initial currency
+| 2 | Max streams
+| 4 | Max message size
 | 24 | Nonce client (Zeroes if unencrypted)
 | 32 | Public key client (Zeroes if unencrypted)
 
 
 ### Reject
-Servers should reject invalid connections out of politeness.
+Servers reject invalid connections.
 Options for ignoring connections that may be malicious should be provided.
 
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 4 | ID
+| 4 | ID (Zero invalid)
 | 4 | Sequence
 | 48 | Encrypt
 | 8 | Timestamp
 | 2 | Rejection type
-| V | Message
+| 1+ | Message (Null terminated UTF-8 string, just null terminating byte if none)
 
 Rejection types are:
 0 - Unknown/Other
-1 - Whitelist
-2 - Overloaded with requests/connections
-3 - Invalid request
-4 - Incompatible version
-5 - User reject
-6 - Server error
+1 - Busy
+2 - Incompatible version
+3 - Unsafe connections not allowed
+4 - Invalid request
+5 - Violation of protocol
+6 - User reject
+7 - Server error
 
 
 ### Challenge
-Challenge the connect request.
-Return the server's nonce and public key.
+Challenge the OPEN request.
+Return the server's nonce and public key for the connection.
+Same format as OPEN.
 
 | Octets | Field |
 |:------ |:----- |
@@ -155,15 +160,15 @@ Return the server's nonce and public key.
 | 4 | ID for requests
 | 8 | Timestamp
 | 2 | Version
-| 2 | Max streams
-| 2 | Initial currency
+| 4 | Initial currency
+| 4 | Max streams
+| 4 | Max message size
 | 24 | Nonce server
 | 32 | Public key server
-| 24 | Accept token (nonce)
 
 
 ### Accept
-Accept the server's challenge.
+Accept the server's CHALLENGE request.
 If the client does not respond then we close the connection.
 The client cannot have lower limitations than the server.
 
@@ -173,13 +178,28 @@ The client cannot have lower limitations than the server.
 | 4 | ID
 | 4 | Sequence
 | 16 | Encrypt
-| 2 | Max streams
-| 2 | Max currency
-| 24 | Nonce again for confirmation
+| 8 | Timestamp
+| 24 | Nonce of server again for confirmation
 
 
 ### Ping
-TODO Should this go into the STREAM protocol?
+Ping applies at the connection level, thus it is at its own level.
+Ping other connection.
+Try to re-resolve original connection information (maybe IP address changed).
+Maybe port changed and wait for max amount of time until ping should have been
+received before terminating connection.
+Notify user if server is just un-reachable.
+If valid reject found, then terminate connection.
+
+| Octets | Field |
+|:------ |:----- |
+| 1 | Control
+| 4 | ID
+| 4 | Sequence
+| 16 | Encrypt
+| 8 | Timestamp
+| 4 | RTT
+| 24 | Nonce again for use as a key
 
 
 ## Stream Protocol

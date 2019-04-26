@@ -25,7 +25,28 @@ server.on('listen', () => {
     client.close();
   });
 
+  client.on('close', () => {
+    console.log('Client closed');
+  });
+
   client.connect({ address: 'localhost', port: 42000 });
+});
+
+server.on('accept', (client) => {
+  const echoStream = client.mkStream(0);
+  client.on('stream', (stream) => {
+    console.log('Stream type: ' + String(stream.type));
+    stream.on('data', (data) => {
+      echoStream.send(data);
+    });
+    stream.on('close', () => {
+      echoStream.close();
+    });
+  });
+
+  client.on('close', () => {
+    console.log('Incoming client closed connection');
+  });
 });
 
 server.on('stop', () => {
