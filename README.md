@@ -1,18 +1,49 @@
 
-# The River Protocol (TRP)
-The River Protocol (TRP, pronounced "trip") is a way to send data faster and in larger quantities
-while managing how it is sent more sanely.
 
-TCP Currently suffers from:
+# The River Protocol (TRP)
+The River Protocol (TRP, pronounced "trip", or written TRiP)
+is a flexible communications protocol.
+
+
+## Goals
+A protocol designed to easily build custom protocols for niche applications
+as found in IoT and other burgeoning arenas.
+Security by default, transparent to user, to reduce vulnerabilities.
+Persistent, robust connections.
+Greater data flexibility so the networking behavior fits the problem space.
+Event-based design for better application reactivity.
+Real-time capabilities, disabled by default for better network performance.
+Framework verbosity to provide information to applications for better
+performance (e.g. User MTU for single packet delivery).
+
+
+## Why use TRiP?
+Let's look at some existing communications protocols...
+
+Note that every protocol suffers from packet attacks due to the insecure
+nature of the internet and the Internet Protocol (IP).
+
+TCP suffers from:
 * No security by default
 * Difficult to implement security
-* Slow handshake when doing security (one for the connection, one for encryption)
+  (causes incorrect implementations or lack of security entirely)
+* Slower handshake when doing security
+  (one for the connection, one for encryption)
 * Head-of-line blocking
+  (degrades gaming experience in the browser)
 * No unreliable send
 * No unordered, reliable messaging
-* Persistent connections that can be hibernated
+* No persistent connections if keep-alive fails
+  (can you through connection details into a database to resume later?)
+* Connection breaks if IPs change
+  (this is unfortunate and can disrupt services)
+* Can be kept alive by some load-balancer configurations
+  (creates additional timeouts and error checking by TCP clients/servers)
 * Heavy-weight when managing many connections to the same destination
-* Requires another protocol to send multiple messages/streams on the same connection
+  (usually to increase throughput)
+* Requires another protocol to send messages or multiplex streams
+  on the same connection
+  (think of the quirks and limitations of HTTP 1.1/2.0)
 
 UDP suffers from:
 * Unreliability
@@ -23,16 +54,21 @@ UDP suffers from:
 * Connectionless
 
 TRP suffers from:
-* Yeah, you still need another protocol on top
+* Protocol details handled in user process (extra context switching)
+* Needs another protocol on top, but that is also part of the design
 
-**WARNINGS:**
-* This code is experimental and may have flaws.
-* I'm starting to think that my structures are too deeply nested;
-  but it may be worth it to provide proper programming abstractions.
-* I know state machines can be ugly, but it's how I kept my sanity.
-* Currently in pre-release and will not follow semantic versioning until release v1.0.0.
-* The original author is not a security expert.
-* Constructive criticism is welcome (if you're gonna complain, have a solution ready).
+
+## WARNINGS
+* This code is experimental and may have flaws
+* Currently in pre-release and will not follow semantic versioning
+  until release v1.0.0
+* This code is mostly intended as a proof-of-concept and reference
+  implementation to document algorithms and outline pitfalls 
+  (NOT for performance)
+* The original author is not a security expert
+* Constructive criticism is welcome
+  (if you're gonna complain detail the problem thoroughly
+  and have a solution ready if possible)
 
 
 ## Features
@@ -92,7 +128,7 @@ Note that servers may impose additional restrictions, these are just the default
 * Min/Max ping: 15/300 seconds. Zero for off or infinite ping rate.
 
 
-## Design Choices
+## Design Choices and Notes
 **Multi Interface Bindings:**
 Disallowed since not all operating systems allow you to determine the interface
 a packet was received on and Node.js doesn't support it.
@@ -102,6 +138,7 @@ Since you can bind to "::" or "0.0.0.0" the receiver of messages
 should allow for one or more return addresses.
 Which begs the question, how does Node.js determine which interface to send 
 messages on? Clearly one must be chosen for a send to take place.
+Perhaps I need to do more research here.
 
 
 **Connection IDs:**
@@ -157,14 +194,14 @@ https://tools.ietf.org/html/rfc4821
 
 
 ## TODO
-- [ ] Additional research on ICE.
+- [ ] Additional research on ICE
+- [ ] Research possible PKI scheme to increase security
+- [ ] Research possible custom DNS + CA/PKI combination
 - [ ] Research Byzantine fault tolerance and if there is any applicability in this protocol
 - [ ] Get the code and specification working.
 - [ ] Test code.
 - [ ] Finalize specs.
 - [ ] Re-work code to be in C.
-
-
 
 
 ## Abbreviation Map
@@ -191,6 +228,13 @@ UMTU: User MTU
 * sodium-native: For security. Seems to have the best interface and support.
 
 
+## C Implementation Dependencies
+* libc
+* OS provided UDP socket interface
+* libcares: For DNS resolution.
+* libsodium: For security.
+
+
 ## Sources
 1. https://tools.ietf.org/html/rfc768
 1. https://tools.ietf.org/html/rfc8085
@@ -201,6 +245,5 @@ UMTU: User MTU
 1. https://gafferongames.com/post/why_cant_i_send_udp_packets_from_a_browser/
 1. https://github.com/nodejs/node-v0.x-archive/issues/1623
 1. https://www.privateinternetaccess.com/blog/wp-content/uploads/2017/08/libsodium.pdf
-
 
 
