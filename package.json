@@ -9,7 +9,11 @@
     "river",
     "protocol",
     "trip",
-    "network"
+    "network",
+    "communication",
+    "custom",
+    "secure",
+    "security"
   ],
   "author": "Craig Jacobson",
   "license": "MIT",
