@@ -221,11 +221,9 @@ UMTU: User MTU
 
 ## Dependencies/Technologies
 * dgram: For sending data fast and independent of order.
-* enumify: To correctly setup enumerations. Useful for state machines.
-* is-ip: To test if IP is IPv4 or IPv6
-* is-valid-path: To test if a string represents a valid path. This is for implementing over Unix Domain Sockets.
 * long: For timestamps and uint64 type values.
 * sodium-native: For security. Seems to have the best interface and support.
+* See package.json for minor dependencies.
 
 
 ## C Implementation Dependencies

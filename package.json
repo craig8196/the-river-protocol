@@ -2,7 +2,15 @@
   "name": "js-trp",
   "version": "0.1.0",
   "description": "The River Protocol (TRP)",
-  "keywords": ["trp", "udp", "tcp", "river", "protocol", "trip", "network"],
+  "keywords": [
+    "trp",
+    "udp",
+    "tcp",
+    "river",
+    "protocol",
+    "trip",
+    "network"
+  ],
   "author": "Craig Jacobson",
   "license": "MIT",
   "homepage": "https://github.com/craig8196/the-river-protocol",
@@ -32,7 +40,8 @@
   },
   "devDependencies": {
     "eslint": "^5.13.0",
+    "eslint-plugin-jest": "^22.10.0",
     "jest": "^24.0.0",
-    "jsdoc": "^3.5.5"
+    "jsdoc": "^3.6.3"
   }
 }

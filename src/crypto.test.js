@@ -21,7 +21,7 @@ describe('crypto', () => {
     let { publicKey, secretKey } = crypto.mkKeyPair();
     let text = 'Hello world!';
     let m1 = Buffer.from(text, 'utf8');
-    let e1 = Buffer.alloc(m1.length + crypto.SEAL_MAC_BYTES)
+    let e1 = Buffer.alloc(m1.length + crypto.SEAL_MAC_BYTES);
 
     expect(crypto.seal(e1, m1, publicKey)).toBeTruthy();
 
