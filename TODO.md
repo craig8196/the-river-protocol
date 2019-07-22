@@ -1,5 +1,5 @@
 
-* Add documentation generation shortcut for npm.
+* Go back to state machine setup (much easier to navigate and reason about).
 * Should I just use ranges and a bitmap for window validation and packet replay protection??
 * If sequence gets out of range, or too high, the connection should be reset.
 * Ensure that all event emissions are documented and consitant.
