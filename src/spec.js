@@ -126,6 +126,7 @@ const reject = {
 
 Object.freeze(timeouts);
 Object.freeze(lengths);
+Object.freeze(limits);
 Object.freeze(control);
 Object.freeze(reject);
 module.exports = {
