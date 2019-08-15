@@ -5,7 +5,7 @@ The following is the protocol specification.
 
 
 ## Definitions and Terms
-**packet:** Raw data transmitted, not including IP or UDP header.
+**packet:** Raw data transmitted, not including IP/UDP or other headers.
 **rinfo:** Return information.  
 **socket:** Interface to sending/receiving packet information.  
 **sender:** Context for sending to specific destination using a socket.  
@@ -162,6 +162,10 @@ scheme can be used.
 |:------ |:----- |
 | 1 | Control
 | 2 | Major Version ID
+// ?? TODO for routing so decryption doesn't need to take place
+| 1+ | Routing Length
+| V | Routing Information (Binary)
+// ?? XOR a hash of the above with ENCRYPT binary to determine if a message was tampered with??
 | 4 | ID (Zeros)
 | 4 | Sequence
 | 48 | Encrypt
