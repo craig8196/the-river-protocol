@@ -3,6 +3,7 @@
 # The River Protocol (TRP)
 The River Protocol (TRP, pronounced "trip", or written TRiP)
 is a flexible communications protocol.
+Fun, pretentious backronym could be: TCP Rest in Peace.
 
 
 ## Goals
@@ -27,35 +28,37 @@ TCP suffers from:
 * No security by default
 * Difficult to implement security
   (causes incorrect implementations or lack of security entirely)
-* Slower handshake when doing security
+* Slow handshake when doing security
   (one for the connection, one for encryption)
 * Head-of-line blocking
   (degrades gaming experience in the browser)
 * No unreliable send
 * No unordered, reliable messaging
 * No persistent connections if keep-alive fails
-  (can you through connection details into a database to resume later?)
-* Connection breaks if IPs change
+  (can you place connection details into a database to resume later?)
+* Connection breaks if IPs change or NAT changes
   (this is unfortunate and can disrupt services)
-* Can be kept alive by some load-balancer configurations
+* Dead connections kept alive by some load-balancer configurations
   (creates additional timeouts and error checking by TCP clients/servers)
-* Heavy-weight when managing many connections to the same destination
+* Heavy-weight solution when managing many connections to the same destination
   (usually to increase throughput)
 * Requires another protocol to send messages or multiplex streams
   on the same connection
-  (think of the quirks and limitations of HTTP 1.1/2.0)
+  (e.g. quirks and limitations of HTTP 1.1/2.0)
 
 UDP suffers from:
+* No security by default
 * Unreliability
-* No encryption
 * Packet replay attacks
 * Spoofing
 * Difficulty in sending large messages/packets
 * Connectionless
 
 TRP suffers from:
-* Protocol details handled in user process (extra context switching)
-* Needs another protocol on top, but that is also part of the design
+* Protocol details handled in user process
+  (some extra context switching)
+* Needs another protocol on top
+  (that is also part of the design)
 
 
 ## WARNINGS
@@ -64,11 +67,11 @@ TRP suffers from:
   until release v1.0.0
 * This code is mostly intended as a proof-of-concept and reference
   implementation to document algorithms and outline pitfalls 
-  (NOT for performance)
+* Not written for CPU/memory performance
 * The original author is not a security expert
-* Constructive criticism is welcome
-  (if you're gonna complain detail the problem thoroughly
-  and have a solution ready if possible)
+* Based on UDP and has associated limitations
+* If you're going to complain detail the problem thoroughly
+  and have a solution ready if possible 
 
 
 ## Features
@@ -93,7 +96,7 @@ Encryption can be disabled, but is not recommended.
 Each connection uses asymmetric encryption that requires two sets of keys.
 An initial public key is recommended for initiating a connection to protect
 clients from malicious interference like spoofing the server before the server
-can reply.
+can reply (man-in-the-middle type attacks).
 The user is notified of IP changes on a connection so whitelisting can be done.
 
 
@@ -101,14 +104,12 @@ The user is notified of IP changes on a connection so whitelisting can be done.
 The river was chosen because data is often sent in streams.
 Each stream is...
 * cheap and easy to create (optimistic creation, handshake is used to destroy)
-* a one-way communication (sorry, no auto-duplexing)
+* one-way communication (sorry, no auto-duplexing)
 * typed according to orderedness and reliableness
 * message oriented
 Messages can be fragmented.
-The framework will report User Maximum Transmission Unit (UMTU)
-and User Maximum Message Unit (UMMS) to user.
 Guaranteed single packet delivery if size is
-less-than-or-equal-to MTU, cannot send at all if size is greater-than MMU.
+less-than-or-equal-to UMTU, cannot send at all if size is greater-than UMMU.
 
 Each stream sends messages in one of the following ways:
 * Ordered/Reliable: Similar to WebSockets. TCP can easily be mimicked.
@@ -118,6 +119,9 @@ Each stream sends messages in one of the following ways:
 
 
 **Limits:**
+The framework will be very easy to query for these limits.
+The framework will report User Maximum Transmission Unit (UMTU)
+and User Maximum Message Unit (UMMU) to user.
 Note that servers may impose additional restrictions, these are just the defaults.
 * Max open connections (no zeroeth ID): (2**32) - 1
 * Max open streams per open connection:  (2**16) - 1
@@ -136,6 +140,7 @@ Bind to a single interface and single port.
 Keeps things simple and may segment your application design to be more manageable.
 Since you can bind to "::" or "0.0.0.0" the receiver of messages
 should allow for one or more return addresses.
+Other implementations may allow multiple bindings.
 Which begs the question, how does Node.js determine which interface to send 
 messages on? Clearly one must be chosen for a send to take place.
 Perhaps I need to do more research here.
@@ -143,13 +148,13 @@ Perhaps I need to do more research here.
 
 **Connection IDs:**
 Originally I was going to use a 16 octet UUID to identify traffic to an endpoint.
-However, given that lookups must be performed on even spoofed messages and
-the power of an attacker is greater than that of a server,
+However, given that lookups must be performed on even spoofed messages
+and the power of an attacker is greater than that of a server,
 I think that even an 8 octet identifier is overkill.
 Four octets give us the ability to easily extract the number
 and easily check against a map;
-with (2**32)-1 possible combinations (zero omitted) there should
-be enough space for a single endpoint without making
+with (2**31)-1 possible combinations (zero omitted, upper bit reserved)
+there should be enough space for a single endpoint without making
 it too easy to spoof connection IDs.
 Attempts at spoofing of connection IDs should be expected.
 Also, this utilizes less space in the packet.
@@ -179,7 +184,7 @@ The following is a list of MTUs:
 1468 - DHCP environments.
 1436 - PPTP environments or VPN.
 1400 - AOl DSL.
-576 - Dial-up.
+ 576 - Dial-up.
 
 Default effective MTU (EMTU_S):
 This does not account for the IP header or UDP header.
@@ -229,7 +234,7 @@ UMTU: User MTU
 ## C Implementation Dependencies
 * libc
 * OS provided UDP socket interface
-* libcares: For DNS resolution.
+* libcares: For DNS resolution, can be omitted for direct IP and custom builds.
 * libsodium: For security.
 
 
