@@ -100,6 +100,14 @@ can reply (man-in-the-middle type attacks).
 The user is notified of IP changes on a connection so whitelisting can be done.
 
 
+**Message Based:**
+While messages on a stream can be large and split for
+transmission/re-transmission they are delivered to the application atomically.
+This is where memory considerations of the application should be considered.
+Guaranteed single packet delivery if size is
+less-than-or-equal-to UMTU, cannot send at all if size is greater-than UMMU.
+
+
 **Streams:**
 The river was chosen because data is often sent in streams.
 Each stream is...
@@ -107,15 +115,17 @@ Each stream is...
 * one-way communication (sorry, no auto-duplexing)
 * typed according to orderedness and reliableness
 * message oriented
-Messages can be fragmented.
-Guaranteed single packet delivery if size is
-less-than-or-equal-to UMTU, cannot send at all if size is greater-than UMMU.
 
 Each stream sends messages in one of the following ways:
 * Ordered/Reliable: Similar to WebSockets. TCP can easily be mimicked.
 * Ordered/UnReliable: Similar to UDP, but only the latest is delivered; earlier messages are discarded.
 * UnOrdered/Reliable: Similar to RUDP or message passing.
 * UnOrdered/UnReliable: UDP, except security is added.
+
+Streaming large files can be done with Ordered/Reliable messaging to keep the
+message sizes low.
+Using the UMMU can increase transmission speed and is a consideration for
+the protocol or application.
 
 
 **Limits:**
