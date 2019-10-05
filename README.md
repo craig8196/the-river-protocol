@@ -75,6 +75,11 @@ TRP suffers from:
 
 
 ## Features
+**Versioning in Protocol:**
+Versioning in the protocol itself is necessary to update and enhance cryptography.
+With quantum computers threatening to break current standards the protocol
+must be forward thinking, just-in-case.
+
 **Connectionless Design:**
 The over-arching architecture is client-server to reduce complexity.
 Peer-to-peer can be done using lower level tools.
