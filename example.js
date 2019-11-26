@@ -3,10 +3,10 @@ const trip = require('./src/trip.js');
 
 const PORT = 42000;
 
-// Create socket. UDP by default.
-const serverSocket = trip.mkSocket({ port: PORT });
 // Create server object.
-const server = trip.mkServer(serverSocket, { allowUnsafeOpen: true });
+// Server is started at end of script.
+// TODO create a default port number for the protocol
+const server = trip.mkServer(PORT, { allowUnsafeOpen: true });
 
 // Start server. Binds to underlying interface.
 server.on('start', () => {
@@ -17,11 +17,10 @@ server.on('start', () => {
 server.on('listen', () => {
   console.log('Ready to accept connections.');
 
-  // Chooses any open port.
-  const clientSocket = trip.mkSocket();
   // Create client. In theory a client could be opened on the server's
   // Router object, but we don't do that yet.
-  const client = trip.mkClient(clientSocket);
+  // Choose any open port by passing null.
+  const client = trip.mkClient(null);
 
   // Connect call at bottom of this block.
 
@@ -70,12 +69,14 @@ server.on('listen', () => {
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
+// TODO make it so values returned get stored on client object
 server.on('screen', (binary) => {
   console.log('Screening: ' + String(binary));
   return true;
 });
 
 // Whitelist connection on the given IP. Accept all for testing.
+// TODO make it so values returned get stored on client object
 server.on('whitelist', (ip) => {
   console.log('Whitelist: ' + String(ip));
   return true;
@@ -84,6 +85,7 @@ server.on('whitelist', (ip) => {
 // Client passed 'screen' and 'whitelist'.
 server.on('accept', (client) => {
   // Automatically open stream for echoing.
+  // We determine the stream ID, reliability, ordered
   const echoStream = client.mkStream(0, true, true);
 
   // New incoming stream.
