@@ -40,12 +40,12 @@
     "is-ip": "^2.0.0",
     "is-valid-path": "^0.1.1",
     "long": "^4.0.0",
-    "sodium-native": "^2.2.6"
+    "sodium-native": "^2.4.6"
   },
   "devDependencies": {
-    "eslint": "^5.13.0",
-    "eslint-plugin-jest": "^22.10.0",
-    "jest": "^24.0.0",
+    "eslint": "^5.16.0",
+    "eslint-plugin-jest": "^22.21.0",
+    "jest": "^24.9.0",
     "jsdoc": "^3.6.3"
   }
 }
