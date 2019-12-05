@@ -124,6 +124,14 @@ const reject = {
   ERROR:     0x07,
 };
 
+/**
+ * Default values.
+ * @namespace
+ */
+const defaults = {
+  PORT: 42443,
+};
+
 Object.freeze(timeouts);
 Object.freeze(lengths);
 Object.freeze(limits);
@@ -136,5 +144,6 @@ module.exports = {
   limits,
   control,
   reject,
+  defaults,
 };
 
