@@ -1,12 +1,10 @@
 
 const trip = require('./src/trip.js');
 
-const PORT = 42000;
-
 // Create server object.
 // Server is started at end of script.
-// TODO create a default port number for the protocol
-const server = trip.mkServer(PORT, { allowUnsafeOpen: true });
+// Default port is 42443 when null is passed.
+const server = trip.mkServer(null, { allowUnsafeOpen: true });
 
 // Start server. Binds to underlying interface.
 server.on('start', () => {
@@ -65,7 +63,7 @@ server.on('listen', () => {
   });
 
   // Now we tell to connect.
-  client.connect({ address: 'localhost', port: PORT });
+  client.open({ address: 'localhost', port: PORT });
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
