@@ -9,6 +9,8 @@ const EventEmitter = require('events');
 const { mkKeyPair } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
 const { mkRouter } = require('./router.js');
+const { defaults } = require('./spec.js');
+const { trace } = require('./log.js');
 'use strict';
 
 
@@ -19,44 +21,73 @@ class Server extends EventEmitter {
   constructor(router) {
     super();
 
+    trace();
+
     this._router = router;
+    /* Allow registration. */
+    this._allowReg = true;
   }
 
   on() {
-    this._router.on.apply(this._router, arguments);
+    trace();
+
+    if (this._allowReg) {
+      this._router.on.apply(this._router, arguments);
+    }
   }
 
   off() {
-    this._router.off.apply(this._router, arguments);
+    trace();
+
+    if (this._allowReg) {
+      this._router.off.apply(this._router, arguments);
+    }
   }
   
   start() {
+    trace();
+
+    this._allowReg = false;
     this._router.start();
   }
 
   stop() {
-    console.log('stop server');
+    trace();
+
     this._router.stop();
+  }
+
+  reset() {
+    trace();
+
+    this._allowReg = true;
+    this._router.reset();
   }
 }
 
 /**
  * Create a server object.
+ * @param {number,SocketInterface} socket - The socket to communicate on or port.
+ * @param {Object} options - See options for mkRouter.
  */
 function mkServer(socket, options) {
+  trace();
+
+  if (!(socket instanceof 'SocketInterface')) {
+    let port = socket;
+    if (typeof socket !== 'number') {
+      port = defaults.PORT;
+    }
+    socket = mkSocket({ port: port });
+  }
+
   if (!options) {
     options = {};
   }
 
-  if (!('maxConnections' in options)) {
-    options.maxConnections = 1024;
-  }
-  else if (options.maxConnections < 1) {
-    options.maxConnections = 1;
-  }
-
   options.allowIncoming = true;
   options.allowOutgoing = false;
+
   return new Server(mkRouter(socket, options));
 }
 
@@ -73,19 +104,25 @@ class Client extends EventEmitter {
   constructor(router) {
     super();
 
+    trace();
+
     this._isListening = false;
     this._router = router;
     this._dest = null;
     this._conn = null;
     this._isClosed = false;
+    this._allowReg = true;
 
     const client = this;
 
     function handleStart() {
+      trace();
       // Hurray. I'm not sure anything should be done here yet.
     }
 
     function handleListen() {
+      trace();
+
       // Create the connection and emit 'open' when connected.
       client._isListening = true;
       console.log('mkConnection');
@@ -103,6 +140,8 @@ class Client extends EventEmitter {
     }
 
     function handleStop() {
+      trace();
+
       // We're done, emit 'close' and deactivate everything.
       client.emit('close');
       client._cleanup();
@@ -118,6 +157,8 @@ class Client extends EventEmitter {
   }
 
   _cleanup() {
+    trace();
+
     this._router.off('start', this.handleStart);
     this._router.off('listen', this.handleListen);
     this._router.off('stop', this.handleStop);
@@ -129,11 +170,35 @@ class Client extends EventEmitter {
     this._isClosed = true;
   }
 
+  on() {
+    trace();
+
+    if (this._allowReg) {
+      this._router.on.apply(this._router, arguments);
+    }
+  }
+
+  off() {
+    trace();
+
+    if (this._allowReg) {
+      this._router.off.apply(this._router, arguments);
+    }
+  }
+
   /**
-   * Start the connection process.
+   * Start/restart the connection process.
+   * TODO implement the next line
+   * @param {String} dest - Required. The destination description as 'domain:port'.
    * @param {Object} dest - Required. The destination description. May vary depending on socket type.
+   * @param {string} address - IP or URL (or 'localhost' for testing).
+   * @param {number} port - Port to attach to, default if not specified.
    */
-  connect(dest) {
+  open(dest) {
+    trace();
+
+    this._allowReg = false;
+
     this._dest = dest;
     if (!this._isListening) {
       this._router.start();
@@ -148,6 +213,8 @@ class Client extends EventEmitter {
    * Disconnect and close the underlying socket.
    */
   close() {
+    trace();
+
     if (!this._isClosed) {
       this._isClosed = true;
       console.log('close client');
@@ -165,13 +232,16 @@ class Client extends EventEmitter {
    * Create a stream object. You may start sending data immediately.
    * @note Don't forget to listen to back pressure in case the stream cannot be created yet.
    * @param {number} id - Optional. Specify a specific identifier for the stream.
+   * @param {boolean} [reliable=true] - Flag for reliable stream.
+   * @param {boolean} [ordered=true] - Flag for ordered stream.
+   * @param {number} [priority=0] - Indicate the priority of this stream over others, higher is more important.
    * @return {Stream} The stream. Null if there is no connection created yet.
-   * 
-   * TODO make sure that streams obey pipe semantics
    */
-  mkStream(id) {
+  mkStream(id, reliable, ordered) {
+    trace();
+
     if (this._conn) {
-      return this._conn.mkStream(id);
+      return this._conn.mkStream(id, reliable, ordered);
     }
     else {
       return null;
@@ -182,18 +252,28 @@ class Client extends EventEmitter {
 /**
  * Create a client object.
  * @param {SocketInterface} socket - The socket that allows reliable or unreliable communication.
- * @param {Object} options - The configuration for the server.
- * @param {boolean} options.allowUnsafeOpen - Allow the opening packet to be unencrypted. Assuming noone is packet sniffing, this is relatively safe. However, for better security it isn't recommended.
- * @param {boolean} options.allowUnsafePacket - Allow all communication to be unencrypted.
+ * @param {Object} options - See options for mkRouter.
  * @return {Client} The client object.
  */
 function mkClient(socket, options) {
+  trace();
+
+  if (!socket) {
+    socket = mkSocket();
+  }
+  else if (typeof socket === 'number') {
+    const port = socket;
+    socket = mkSocket({ port: port });
+  }
+
   if (!options) {
     options = {};
   }
+
   options.maxConnections = 1;
   options.allowIncoming = false;
   options.allowOutgoing = true;
+
   return new Client(mkRouter(socket, options));
 }
 
