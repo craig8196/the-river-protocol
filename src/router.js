@@ -8,26 +8,253 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { timeouts, lengths, control } = require('./spec.js');
+const { /* Unused: timeouts, */ lengths, control } = require('./spec.js');
 const Conn = require('./conn.js');
+const { SocketInterface } = require('./socket.js');
+const { trace } = require('./log.js');
 
 
-class State extends Enum {}
-State.initEnum([
-  'CREATE',
+/*
+ * A state-machine type design was chosen so the desired behavior would
+ * be more obvious, even though most functionality is still in the 
+ * Router class.
+ */
+
+class Event extends Enum {}
+Event.initEnum([
   'START',
-  'LISTEN',
-  'DISCONNECT',
-  'END',
+  'SOCKET_ERROR',
+  'SOCKET_MESSAGE',
+  'SOCKET_BIND',
+  'SOCKET_BIND_TIMEOUT',
+  'SOCKET_CLOSE',
+  'SOCKET_CLOSE_TIMEOUT',
+  'STOP',
+  'STOP_TIMEOUT',
+  'STOP_ZERO_CONNECTIONS',
 ]);
 
+class State extends Enum {}
+State.initEnum({
+  /* All state machines start at START, right? */
+  'START': {
+    enter(router) {
+      router._setListeners();
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.START:
+          return State.BIND;
+        default:
+          {
+            this.emit('error', new Error('Expecting START event. Found: ' + String(e.name)));
+          }
+          break;
+      }
+      return this._state;
+    },
+
+    exit() {
+      // No-op. No cleanup needed.
+    },
+  },
+
+  /* In process of binding. */
+  'BIND': {
+    enter() {
+      this._socket.bind();
+      this._setBindTimeout();
+      this.emit('bind');
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.SOCKET_ERROR:
+          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
+          return State.ERROR;
+        case Event.SOCKET_MESSAGE:
+          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
+          return State.ERROR;
+        case Event.SOCKET_BIND:
+          /* Expected path. */
+          return State.LISTEN;
+        case Event.SOCKET_BIND_TIMEOUT:
+          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
+          return State.ERROR;
+        case Event.SOCKET_CLOSE:
+          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
+          return State.ERROR;
+        case Event.STOP:
+          // TODO create special state for this case
+          return State.CLOSE;
+        default:
+          this.emit('error', new Error('Expecting SOCKET* events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+      //return this._state;
+    },
+
+    exit() {
+      this._clearBindTimeout();
+    },
+  },
+
+  /* Ready for messages. */
+  'LISTEN': {
+    enter() {
+      this.emit('listen');
+    },
+    
+    transition(e, eData) {
+      switch (e) {
+        case Event.SOCKET_MESSAGE:
+          this._processMessage(eData.message, eData.rinfo);
+          this.emit('error', new Error('SOCKET_MESSAGE received before SOCKET_CLOSE.'));
+          return State.LISTEN;
+        case Event.SOCKET_CLOSE:
+          this.emit('error', new Error('SOCKET_CLOSE received before STOP.'));
+          return State.END;
+        case Event.STOP:
+          return State.STOP_NOTIFY;
+        default:
+          this.emit('error', new Error('Expecting SOCKET* events. Found: ' + String(e.name)));
+          return State.CLOSE_ERROR;
+      }
+      //return this._state;
+    },
+
+    exit() {
+    },
+  },
+
+  'STOP_NOTIFY': {
+    enter() {
+      this._setStopNotifyTimeout();
+      /* Odd condition where timeout doesn't get cleared if zero connections
+       * and is called before the timeout is set.
+       */
+      this._signalStop();
+    },
+
+    transition(e, eData) {
+      switch (e) {
+        case Event.SOCKET_MESSAGE:
+          /* Expected path. */
+          this._processMessage(eData.message, eData.rinfo);
+          this.emit('error', new Error('SOCKET_MESSAGE received before SOCKET_CLOSE.'));
+          return State.STOP_NOTIFY;
+        case Event.SOCKET_CLOSE:
+          /* Expected path. */
+          return State.END;
+        case Event.STOP:
+          /* I guess the user really want to stop now. */
+          return State.CLOSE;
+        case Event.STOP_TIMEOUT:
+          /* Remaining connections get hard drop. */
+          return State.CLOSE;
+        case Event.STOP_ZERO_CONNECTIONS:
+          /* Nice exit. */
+          return State.CLOSE;
+        default:
+          this.emit('error', new Error('Expecting TIMEOUT event. Found: ' + String(e.name)));
+          return State.CLOSE_ERROR;
+      }
+    },
+
+    exit() {
+      this._clearStopNotifyTimeout();
+    },
+  },
+
+  /* Stop messages. */
+  'CLOSE': {
+    enter() {
+      this._socket.close();
+      this._setCloseTimeout();
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.SOCKET_CLOSE:
+          /* Expected path. */
+          return State.END;
+        case Event.SOCKET_CLOSE_TIMEOUT:
+          return State.ERROR;
+        default:
+          this.emit('error', new Error('Expecting SOCKET_CLOSE events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+      //return this._state;
+    },
+
+    exit() {
+      this._clearCloseTimeout();
+    },
+  },
+
+  'CLOSE_ERROR': {
+    enter() {
+      this._socket.close();
+      this._setCloseTimeout();
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.SOCKET_CLOSE:
+          return State.ERROR;
+        case Event.SOCKET_CLOSE_TIMEOUT:
+          return State.ERROR;
+        default:
+          this.emit('error', new Error('Expecting SOCKET_CLOSE events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+      //return this._state;
+    },
+
+    exit() {
+      this._clearCloseTimeout();
+    },
+  },
+
+  'END': {
+    enter() {
+      this._cleanupListeners();
+      this.emit('stop');
+    },
+
+    transition(e) {
+      this.emit('error', new Error('No events expected. Found: ' + String(e.name)));
+      return State.ERROR;
+    },
+
+    exit() {
+    },
+  },
+
+  'ERROR': {
+    enter() {
+    },
+
+    transition(e) {
+      this.emit('error', new Error('No events expected. Found: ' + String(e.name)));
+      return State.ERROR;
+    },
+
+    exit() {
+    },
+  },
+});
+
 /**
- * Router is a junction or meeting of conns, thus managing 
+ * Router is a junction or meeting of connections, thus managing 
  * multiple connections.
  *
  * Duties:
  * Store socket, conns, and state.
- * Route packets to the correct conn.
+ * Route packets to the correct connection.
+ * Limit number of connections.
+ * Basic protection of denial-of-service.
  * Perform basic packet rejection linting:
  * - Bad length
  * - Bad control
@@ -35,68 +262,122 @@ State.initEnum([
  * - Bad OPEN request
  */
 class Router extends EventEmitter {
-  // TODO document
+
+  /**
+   * Construct Router object from valid socket and options.
+   * @private
+   */
   constructor(socket, options) {
     super();
+
+    trace();
 
     if (!options) {
       options = {};
     }
 
-    this.socket = socket;
-    this.map = new Map();
-    // TODO determine if this could be hash map attack vector...
-    // TODO determine how timeouts are handled (should be shorter during busier periods)
-    this.addresses = new Map();
+    this._socket = socket;
+    this._map = new Map();
+    this._addresses = new Map();
 
-    this.keys = options.keys;
-    this.maxConnections = options.maxConnections;
-    this.allowIncoming = options.allowIncoming;
-    this.allowOutgoing = options.allowOutgoing;
-    this.allowUnsafeOpen = options.allowUnsafeOpen;
-    this.allowUnsafePacket = options.allowUnsafePacket;
+    this._keys = options.keys;
+    this._maxConnections = options.maxConnections;
+    this._allowIncoming = options.allowIncoming;
+    this._allowOutgoing = options.allowOutgoing;
+    this._allowUnsafeOpen = options.allowUnsafeOpen;
+    this._allowUnsafePacket = options.allowUnsafePacket;
 
-    this.state = State.CREATE;
+    this._bindTimeoutMs = 1000;
+    this._closeTimeoutMs = 1000;
+    this._stopTimeoutMs = 1000;
 
-    this.setupListeners();
+    this._internalState = State.START;
+    this._internalState.enter(this);
   }
 
-  setupListeners() {
+  /**
+   * Get the internal state.
+   * @private
+   * @return {State}
+   */
+  get _state() {
+    return this._internalState;
+  }
+
+  /**
+   * Set the internal state with appropriate events emitted as needed.
+   * @private
+   * @param {State} newState - The state to setup with. No-op if same state.
+   */
+  set _state(newState) {
+    if (this._internalState !== newState) {
+      this._internalState.exit.call(this);
+      this._internalState = newState;
+      this._internalState.enter.call(this);
+    }
+    else {
+      /* Transitioning to same state doesn't change anything. */
+    }
+  }
+
+  /**
+   * Perform the transition and change states as needed.
+   * @private
+   */
+  _transition(eventType, eventData) {
+    this._state = this._state.transition.call(this, eventType, eventData);
+  }
+
+  /**
+   * Register listeners.
+   * @private
+   */
+  _setupListeners() {
+    trace();
+
     const router = this;
 
     /**
      * Pass error along.
      */
     function handleError(error) {
-      router.socketError(error);
+      trace();
+
+      router._socketError(error);
     }
 
     /**
      * Pass packets along.
      */
     function handleMessage(message, rinfo) {
-      router.socketMessage(message, rinfo);
+      trace();
+
+      router._socketMessage(message, rinfo);
     }
 
     /**
      * Listen for bind event.
      */
     function handleListening() {
-      router.socketBind();
+      trace();
+
+      router._socketBind();
     }
 
     /**
      * Listen for close event.
      */
     function handleClose() {
-      router.socketClose();
+      trace();
+
+      router._socketClose();
     }
 
     // Save the event handlers
-    this.handleError = handleError;
-    this.handleMessage = handleMessage;
-    this.handleListening = handleListening;
-    this.handleClose = handleClose;
+    this._handleSocketError = handleError;
+    this._handleSocketMessage = handleMessage;
+    this._handleSocketListening = handleListening;
+    this._handleSocketClose = handleClose;
 
     this.socket.on('error', handleError);
     this.socket.on('message', handleMessage);
@@ -104,23 +385,31 @@ class Router extends EventEmitter {
     this.socket.on('close', handleClose);
   }
 
-  cleanupListeners() {
-    this.socket.off('error', this.handleError);
-    this.socket.off('message', this.handleMessage);
-    this.socket.off('listening', this.handleListening);
-    this.socket.off('close', this.handleClose);
+  /**
+   * Deregister listeners on socket.
+   * @private
+   */
+  _cleanupListeners() {
+    trace();
+
+    this.socket.off('error', this._handleSocketError);
+    this.socket.off('message', this._handleSocketMessage);
+    this.socket.off('listening', this._handleSocketListening);
+    this.socket.off('close', this._handleSocketClose);
   }
 
   /**
-   * Create a new random identifier.
+   * Create a new identifier.
+   * @private
+   * @warn NOT guaranteed to be random.
    * @return {number} Non-zero on success, zero otherwise.
    */
-  newId() {
-    if (this.state === State.LISTEN && this.map.size < this.maxConnections) {
+  _newId() {
+    if (this._state === State.LISTEN && this._map.size < this._maxConnections) {
       let id = crypto.mkId();
       let count = 1;
       const maxTry = 30;
-      while (id === 0 || this.hasId(id)) {
+      while (id === 0 || this._hasId(id)) {
         if (maxTry === count) {
           return 0;
         }
@@ -135,80 +424,84 @@ class Router extends EventEmitter {
   }
 
   /**
+   * @private
    * @return {boolean} True if the map contains the given id; false otherwise.
    */
-  hasId(id) {
-    return this.map.has(id);
+  _hasId(id) {
+    return this._map.has(id);
   }
 
   /**
    * Get the conn as specified. If not found, return a dummy conn.
+   * @private
    * @param {number} id - The id of the conn to be found.
-   * @return {Conn}
+   * @return Conn if exists, undefined otherwise.
    */
-  getId(id) {
+  _getId(id) {
+    return this._map.get(id);
+  }
+
+  /**
+   * Associate the id and the connection.
+   * @private
+   * @param {number} id - The id of the connection.
+   * @param {Conn} - The connection.
+   */
+  _setId(id, conn) {
     if (id) {
-      return this.map.getId(id);
-    }
-    else {
-      return null;
-    }
-  }
-
-  setId(id, conn) {
-    if (id) {
-      this.map.set(id, conn);
-    }
-  }
-
-  delId(id) {
-    this.map.delete(id);
-  }
-
-  setAddress(rinfo, conn) {
-    const key = this.socket.mkKey(rinfo);
-    this.addresses[key] = conn;
-  }
-
-  getAddress(rinfo) {
-    const key = this.socket.mkKey(rinfo);
-    return this.addresses[key];
-  }
-
-  start() {
-    if (this.state === State.CREATE) {
-      this.state = State.START;
-      this.emit('start');
-      this.socket.bind();
-    }
-    else {
-      const err = new Error('Already started/stopped');
-      this.emit('error', err);
-    }
-  }
-
-  socketError(error) {
-    switch (this.state) {
-      case State.START:
-        {
-          const err = new Error('Unable to bind to socket.');
-          this.emit('error', err);
-          this.state = State.END;
-        }
-        break;
-      default:
-        {
-          const err = new Error('Unexpected error on socket: ' + String(error));
-          this.emit('error', err);
-        }
-        break;
+      this._map.set(id, conn);
     }
   }
 
   /**
-   * Process the message and information.
+   * Remove the id from the map.
+   * @private
+   * @param {number} id - The id to delete.
    */
-  processMessage(msg, rinfo) {
+  _delId(id) {
+    this._map.delete(id);
+  }
+
+  /**
+   * Set the return information of the given route to prevent creating new
+   * objects after failure for peer to receive response.
+   * @private
+   * @warn It is an error to try and OPEN a connection to the same location.
+   * @param {*} rinfo - The return information, type is determined by socket.
+   * @param {Conn} conn - The connection information.
+   */
+  _setAddress(rinfo, conn) {
+    const key = this._socket.mkKey(rinfo);
+    this._addresses[key] = conn;
+  }
+
+  /**
+   * Get any already associated connection.
+   * @private
+   * @return {Conn} if exists, undefined otherwise.
+   */
+  _getAddress(rinfo) {
+    const key = this._socket.mkKey(rinfo);
+    return this._addresses[key];
+  }
+
+  /**
+   * Handle when there is an error on the socket.
+   * @private
+   */
+  _socketError(error) {
+    trace();
+
+    this._transition(Event.SOCKET_ERROR, error);
+  }
+
+  /**
+   * Process the message and return information.
+   * @private
+   */
+  _processMessage(msg, rinfo) {
+    trace();
+
     // HERE
     console.log('Receiving message...');
     console.log(msg.toString('hex'));
@@ -292,7 +585,7 @@ class Router extends EventEmitter {
 
     // Extract basic header values
     // TODO const rest = msg.slice(lengths.PACKET_PREFIX);
-    const conn = id ? this.getId(id) : null;
+    const conn = id ? this._getId(id) : null;
     const seq = msg.slice(lengths.CONTROL, lengths.CONTROL + lengths.SEQUENCE);
     if (conn) {
       //const offset = lengths.CONTROL + lengths.ID;
@@ -332,134 +625,175 @@ class Router extends EventEmitter {
     }
   }
 
-  socketMessage(message, rinfo) {
-    switch (this.state) {
-      case State.LISTEN:
-        {
-          this.processMessage(message, rinfo);
-        }
-        break;
-      default:
-        {
-          const err = new Error('Received unexpected packet');
-          this.emit('error', err, rinfo);
-        }
-        break;
+  /**
+   * Handle when there is a message on the socket.
+   * @private
+   */
+  _socketMessage(message, rinfo) {
+    trace();
+
+    this._transition(Event.SOCKET_MESSAGE, { message, rinfo });
+  }
+
+  /**
+   * Handle when socket is bound.
+   * @private
+   */
+  _socketBind() {
+    trace();
+
+    this._transition(Event.SOCKET_CLOSE);
+  }
+
+  /**
+   * Handle when the socket is closed.
+   * @private
+   */
+  _socketClose() {
+    trace();
+
+    this._transition(Event.SOCKET_CLOSE);
+  }
+
+  /**
+   * Create a timeout so we don't hang forever trying to bind.
+   * @private
+   */
+  _setBindTimeout() {
+    trace();
+
+    const router = this;
+    function _bindTimeout() {
+      router.transition(Event.SOCKET_CLOSE_TIMEOUT);
+    }
+    this._bindTimeoutHandle = setTimeout(_bindTimeout, this._bindTimeoutMs);
+  }
+
+  /**
+   * Clear the timeout so we don't get unexpected events.
+   * @private
+   */
+  _clearBindTimeout() {
+    trace();
+
+    if (this._bindTimeoutHandle) {
+      clearTimeout(this._bindTimeoutHandle);
+      this._bindTimeoutHandle = null;
     }
   }
 
-  socketBind() {
-    if (this.state === State.START) {
-      this.state = State.LISTEN;
-      this.emit('listen');
+  /**
+   * Create a timeout so we don't hang forever trying to close.
+   * @private
+   */
+  _setCloseTimeout() {
+    trace();
+
+    const router = this;
+    function _closeTimeout() {
+      router.transition(Event.SOCKET_CLOSE_TIMEOUT);
     }
-    else {
-      const err = new Error('Already bound');
-      this.emit('error', err);
+    this._closeTimeoutHandle = setTimeout(_closeTimeout, this._closeTimeoutMs);
+  }
+
+  /**
+   * Clear the timeout so we don't get unexpected events.
+   * @private
+   */
+  _clearCloseTimeout() {
+    trace();
+
+    if (this._closeTimeoutHandle) {
+      clearTimeout(this._closeTimeoutHandle);
+      this._closeTimeoutHandle = null;
     }
   }
 
-  socketClose() {
-    console.log('socket close router');
-    switch (this.state) {
-      case State.START:
-        {
-          const err = new Error('Socket closed when expecting socket bind');
-          this.emit('error', err);
-          this.state = State.END;
-        }
-        break;
-      case State.LISTEN:
-        {
-          this.disconnect(0);
-        }
-        break;
-      case State.DISCONNECT:
-        {
-          this.state = State.END;
-        }
-        break;
-      default:
-        {
-          const err = new Error('Unexpected socket close event');
-          this.emit('error', err);
-        }
-        break;
-    }
-  }
+  /**
+   * Notify all connections of shutdown.
+   * @private
+   */
+  _signalStop() {
+    trace();
 
-  stop(graceMs) {
-    if (!Number.isInteger(graceMs)) {
-      graceMs = timeouts.DEFAULT_GRACE;
-    }
-
-    this.disconnect(graceMs);
-  }
-
-  disconnect(graceMs) {
-    console.log('stop router');
-    switch (this.state) {
-      case State.CREATE:
-      case State.START:
-        {
-          this.state = State.END;
-          this.cleanupListeners();
-        }
-        break;
-      case State.LISTEN:
-        {
-          console.log('router listening');
-          this.state = State.DISCONNECT;
-          this.signalDisconnect(graceMs);
-        }
-        break;
-      default:
-        {
-          const err = new Error('Invalid attempt to disconnect');
-          this.emit('error', err);
-        }
-        break;
-    }
-  }
-
-  signalDisconnect(graceMs) {
-    if (!Number.isInteger(graceMs)) {
-      graceMs = 0;
-    }
+    const router = this;
 
     function signalSoftDisconnect(conn/* Unused: id, map */) {
+      trace();
+
       conn.stop();
     }
 
     function signalHardDisconnect(conn/* Unused: id, map */) {
+      trace();
+
       conn.close();
     }
 
-    function handleDisconnectTimeout(router) {
-      console.log('hard disconnect router');
-      delete router.disconnectTimeout;
-      router.state = State.END;
-      router.map.forEach(signalHardDisconnect);
-      router.map = null;
-      this.socket.close();
+    function zeroConnections() {
+      router.transition(Event.STOP_ZERO_CONNECTIONS);
     }
 
-    if (this.socket.isClosed()) {
-      this.state = State.END;
-      this.cleanupListeners();
-      this.map.forEach(signalHardDisconnect);
-      this.map.clear();
+    if (!this.map.size) {
+      setImmediate(zeroConnections);
     }
-    else if (!this.map.size) {
+    else if (this._socket.isClosed()) {
       this.map.forEach(signalHardDisconnect);
       this.map.clear();
-      this.socket.close();
+      setImmediate(zeroConnections);
     }
     else {
-      console.log('soft disconnect router');
       this.map.forEach(signalSoftDisconnect);
-      this.disconnectTimeout = setTimeout(handleDisconnectTimeout, graceMs, this);
     }
+  }
+
+  /**
+   * Create a timeout so we don't hang forever trying to shutdown.
+   * @private
+   */
+  _setStopTimeout() {
+    const router = this;
+    function _stopTimeout() {
+      router.transition(Event.STOP_TIMEOUT);
+    }
+    this._stopTimeoutHandle = setTimeout(_stopTimeout, this._stopTimeoutMs);
+  }
+
+  /**
+   * Clear the timeout so we don't get unexpected events.
+   * @private
+   */
+  _clearStopTimeout() {
+    if (this._stopTimeoutHandle) {
+      clearTimeout(this._stopTimeoutHandle);
+      this._stopTimeoutHandle = null;
+    }
+  }
+
+  /**
+   * Start the router.
+   */
+  start() {
+    trace();
+
+    this._transition(Event.START);
+  }
+
+  /**
+   * Stop the router.
+   * @param {number} [graceMs=1000] - The amount of time to give connections to wrap up.
+   */
+  stop(graceMs) {
+    trace();
+
+    if (Number.isInteger(graceMs)) {
+      if (graceMs < 0) {
+        graceMs = 0;
+      }
+      this._stopTimeoutMs = graceMs;
+    }
+
+    this.transition(Event.STOP);
   }
 
   /**
@@ -468,6 +802,8 @@ class Router extends EventEmitter {
    * @return A promise that will either return a connection or an error.
    */
   mkConnection(dest) {
+    trace();
+
     // Internally the connection is called a conn, but these details don't
     // need to be known to the user
     const router = this;
@@ -523,10 +859,36 @@ class Router extends EventEmitter {
   }
 }
 
+/**
+ * Create a Router.
+ * @param {SocketInterface} socket - Valid socket type.
+ * @param {object} [options] - Options object.
+ * @param {object} [options.keys] - Valid key pair from crypto.
+ * @param {number} [options.maxConnections=1024] - The max connections, minimum of 1.
+ * @param {boolean} [options.allowIncoming=false] - Allow incoming connections.
+ * @param {boolean} [options.allowOutgoing=false] - Allow outgoing connections.
+ * @param {boolean} [options.allowUnsafeOpen=false] - Allow unencrypted OPEN requests.
+ * @param {boolean} [options.allowUnsafePacket=false] - Allow all traffic to be unencrypted.
+ * @return {Router}
+ */
 function mkRouter(socket, options) {
+  trace();
+
+  if (!(socket instanceof SocketInterface)) {
+    throw new Error('Invalid socket type.');
+  }
+
   if (!options) {
     options = {};
   }
+
+  const defaultConnections = 1024;
+  options.maxConnections =
+    'maxConnections' in options ? (options.maxConnections) : defaultConnections;
+  if (options.maxConnections < 1) {
+    options.maxConnections = 1;
+  }
+
   options.allowIncoming =
     'allowIncoming' in options ? (!!options.allowIncoming) : false;
   options.allowOutgoing =
@@ -535,14 +897,15 @@ function mkRouter(socket, options) {
     'allowUnsafeOpen' in options ? (!!options.allowUnsafeOpen) : false;
   options.allowUnsafePacket =
     'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
+
   if (!options.keys) {
     options.keys = crypto.mkKeyPair();
   }
+
   return new Router(socket, options);
 }
 
 module.exports = {
-  Router,
   mkRouter,
 };
 
