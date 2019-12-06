@@ -240,14 +240,18 @@ State.initEnum([
   'END'
 ]);
 
-class Conn extends EventEmitter {
-  constructor(id) {
+// TODO make sure that streams obey pipe semantics
+// TODO add mkStream method on connection
+// TODO add hasStream method to determine if an ID is taken
+// TODO add getStreamId for random, or next, stream ID
+class Connection extends EventEmitter {
+  constructor(id, sender) {
     super();
 
     this.id = id;
+    this.sender = sender;
     this.streams = new Map();
 
-    this.sender = null;
     this.encrypted = true;
     this.timestamp = null;
 
@@ -1035,5 +1039,5 @@ class Conn extends EventEmitter {
   }
 }
 
-module.exports = Conn;
+module.exports = Connection;
 
