@@ -149,22 +149,39 @@ class UdpSocket extends SocketInterface {
     const addr = this._socket.address();
     return addr.address + ':' + String(addr.port);
   }
-  
+
   /**
    * Generic bind call. This is so other socket types with different binding
    * can be used.
    * @param {Function} cb - The callback indicating success or failure.
    */
   bind(cb) {
-    this._socket.bind({ exclusive: true, port: this._port, address: this._address }, cb);
+    if (!this._isClosed) {
+      try {
+        /* To my knowledge, this is NOT synchronous. */
+        this._socket.bind({ exclusive: true, port: this._port, address: this._address }, cb);
+      }
+      catch (e) {
+        this.emit('error', e);
+      }
+    }
+    else {
+      this._socket.emit('error', new Error('Cannot bind to closed socket.'));
+    }
   }
 
   /**
    * Close the underlying socket.
    */
   close() {
-    this._isClosed = true;
-    this._socket.close();
+    if (!this._isClosed) {
+      this._isClosed = true;
+      /* To my knowledge this is NOT synchronous. */
+      this._socket.close();
+    }
+    else {
+      this._socket.emit('error', new Error('Cannot close a closed socket.'));
+    }
   }
 
   isClosed() {
@@ -229,7 +246,6 @@ function mkSocket(options) {
       throw new Error('Invalid port: ' + options.port);
     }
   }
-
 
   if (socket_type !== 'local') {
     return new UdpSocket(socket_type, options.port, options.address);
