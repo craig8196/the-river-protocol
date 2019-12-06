@@ -19,7 +19,7 @@ const version = 0;
  * Default timeout values in milliseconds.
  * @namespace
  */
-const timeouts = {
+const timeout = {
   PING_MIN:         15 * 1000,
   PING_REC:         20 * 1000,
   PING_MAX:         60 * 60 * 1000,
@@ -32,7 +32,7 @@ const timeouts = {
  * Lengths of certain fields in octets.
  * @namespace
  */
-const lengths = {
+const length = {
   CONTROL: 1,
   ID: 4,
   SEQUENCE: 4,
@@ -67,26 +67,35 @@ const lengths = {
   WINDOW: 256,
 };
 /* Use these values for determining our own payload size. */
-lengths.UDP_MTU_DATA_MIN = lengths.UDP_MTU_MIN - lengths.IP_HEADER - lengths.UDP_HEADER;
-lengths.UDP_MTU_DATA_REC = lengths.UDP_MTU_REC - lengths.IP_HEADER - lengths.UDP_HEADER;
-lengths.UDP_MTU_DATA_MAX = lengths.UDP_MTU_MAX - lengths.IP_HEADER - lengths.UDP_HEADER;
+length.UDP_MTU_DATA_MIN = length.UDP_MTU_MIN - length.IP_HEADER - length.UDP_HEADER;
+length.UDP_MTU_DATA_REC = length.UDP_MTU_REC - length.IP_HEADER - length.UDP_HEADER;
+length.UDP_MTU_DATA_MAX = length.UDP_MTU_MAX - length.IP_HEADER - length.UDP_HEADER;
 /* Required prefix of every packet. */
-lengths.PREFIX = lengths.CONTROL + lengths.ID + lengths.SEQUENCE;
-/* OPEN packet lengths. */
-lengths.OPEN_DATA = lengths.ID + lengths.TIMESTAMP + lengths.VERSION
-                    + lengths.NONCE + lengths.PUBLIC_KEY;
-lengths.OPEN_DECRYPT = lengths.PREFIX + lengths.OPEN_DATA;
-lengths.OPEN_ENCRYPT = lengths.OPEN_DECRYPT + lengths.SEAL_PADDING;
-/* REJECT packet lengths. */
-lengths.REJECT_DATA = lengths.TIMESTAMP + lengths.REJECT_CODE + 1;
-lengths.REJECT_DECRYPT = lengths.PREFIX + lengths.REJECT_DATA;
-lengths.REJECT_ENCRYPT = lengths.REJECT_DECRYPT + lengths.SEAL_PADDING;
+length.PREFIX = length.CONTROL + length.ID + length.SEQUENCE;
+/* OPEN packet length. */
+length.OPEN_DATA = length.ID + length.TIMESTAMP + length.VERSION
+                    + length.NONCE + length.PUBLIC_KEY;
+length.OPEN_DECRYPT = length.PREFIX + length.OPEN_DATA;
+length.OPEN_ENCRYPT = length.OPEN_DECRYPT + length.SEAL_PADDING;
+/* REJECT packet length. */
+length.REJECT_DATA = length.TIMESTAMP + length.REJECT_CODE + 1;
+length.REJECT_DECRYPT = length.PREFIX + length.REJECT_DATA;
+length.REJECT_ENCRYPT = length.REJECT_DECRYPT + length.SEAL_PADDING;
 
 /**
- * Default limits.
+ * Offsets for values.
  * @namespace
  */
-const limits = {
+const offset = {
+  CONTROL: 0,
+  ID: length.CONTROL,
+};
+
+/**
+ * Default limit.
+ * @namespace
+ */
+const limit = {
   STREAMS: 1,
   CURRENCY: 256,
   MESSAGES: 65535,
@@ -132,16 +141,19 @@ const defaults = {
   PORT: 42443,
 };
 
-Object.freeze(timeouts);
-Object.freeze(lengths);
-Object.freeze(limits);
+Object.freeze(timeout);
+Object.freeze(length);
+Object.freeze(offset);
+Object.freeze(limit);
 Object.freeze(control);
 Object.freeze(reject);
+Object.freeze(defaults);
 module.exports = {
   version,
-  timeouts,
-  lengths,
-  limits,
+  timeout,
+  length,
+  offset,
+  limit,
   control,
   reject,
   defaults,
