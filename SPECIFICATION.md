@@ -161,13 +161,13 @@ scheme can be used.
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
+| 4 | ID (Zeros or ANY)
+| 4 | Sequence
 | 2 | Major Version ID
 // ?? TODO for routing so decryption doesn't need to take place
 | 1+ | Routing Length
 | V | Routing Information (Binary)
 // ?? XOR a hash of the above with ENCRYPT binary to determine if a message was tampered with??
-| 4 | ID (Zeros)
-| 4 | Sequence
 | 48 | Encrypt
 | OPENING INFO |
 
@@ -181,20 +181,20 @@ If the OPENING INFO has different keys on resubmissions then it is considered ma
 | Octets | Field |
 |:------ |:----- |
 | 1 | Control
-| 2 | Major Version ID
 | 4 | ID
 | 4 | Sequence
+| 2 | Major Version ID
 | 48 | Encrypt
 | OPENING INFO |
 
 
 ### OPENING INFO
-| 4 | ID for future responses/requests
+| 4 | Receiver ID for future responses/requests
 | 8 | Timestamp
-| 2 | Max Currency
-| 2 | Currency Rate
-| 2 | Max Streams
-| 4 | Max Message
+| 2 | Sender Max Currency
+| 2 | Sender Currency Rate
+| 2 | Sender Max Streams
+| 4 | Sender Max Message
 | 24 | Nonce client (Zeroes if unencrypted)
 | 32 | Public key client (Zeroes if unencrypted)
 
