@@ -8,10 +8,10 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { /* Unused: timeouts, */ lengths, control } = require('./spec.js');
-const Conn = require('./conn.js');
+const { /* Unused: timeout, */ offset, length, control } = require('./spec.js');
+const Connection = require('./connection.js');
 const { SocketInterface } = require('./socket.js');
-const { trace } = require('./log.js');
+const { debug, trace } = require('./util.js');
 
 
 /*
@@ -291,6 +291,8 @@ class Router extends EventEmitter {
     this._closeTimeoutMs = 1000;
     this._stopTimeoutMs = 1000;
 
+    this._screenCb = () => true;
+
     this._internalState = State.START;
     this._internalState.enter(this);
   }
@@ -435,7 +437,7 @@ class Router extends EventEmitter {
    * Get the conn as specified. If not found, return a dummy conn.
    * @private
    * @param {number} id - The id of the conn to be found.
-   * @return Conn if exists, undefined otherwise.
+   * @return Connection if exists, undefined otherwise.
    */
   _getId(id) {
     return this._map.get(id);
@@ -445,7 +447,7 @@ class Router extends EventEmitter {
    * Associate the id and the connection.
    * @private
    * @param {number} id - The id of the connection.
-   * @param {Conn} - The connection.
+   * @param {Connection} - The connection.
    */
   _setId(id, conn) {
     if (id) {
@@ -466,23 +468,21 @@ class Router extends EventEmitter {
    * Set the return information of the given route to prevent creating new
    * objects after failure for peer to receive response.
    * @private
-   * @warn It is an error to try and OPEN a connection to the same location.
+   * @warn It is an error to OPEN a connection to the same location after established.
    * @param {*} rinfo - The return information, type is determined by socket.
-   * @param {Conn} conn - The connection information.
+   * @param {Connection} conn - The connection information.
    */
-  _setAddress(rinfo, conn) {
-    const key = this._socket.mkKey(rinfo);
-    this._addresses[key] = conn;
+  _setAddress(sourceKey, conn) {
+    this._addresses[sourceKey] = conn;
   }
 
   /**
-   * Get any already associated connection.
+   * Get any already associated connection for duplicate sent info.
    * @private
-   * @return {Conn} if exists, undefined otherwise.
+   * @return {Connection} if exists, undefined otherwise.
    */
-  _getAddress(rinfo) {
-    const key = this._socket.mkKey(rinfo);
-    return this._addresses[key];
+  _getAddress(sourceKey) {
+    return this._addresses[sourceKey];
   }
 
   /**
@@ -502,31 +502,34 @@ class Router extends EventEmitter {
   _processMessage(msg, rinfo) {
     trace();
 
-    // HERE
-    console.log('Receiving message...');
-    console.log(msg.toString('hex'));
-    console.log(msg.length);
-    console.log(rinfo);
+    debug(msg.toString('hex'));
+    debug(String(rinfo));
+    const sourceKey = this._socket.mkKey(rinfo);
 
-    // First, check the length
-    const len = msg.length;
-    if (len < lengths.PACKET_MIN) {
-      const err = new Error('Invalid packet length: ' + String(len));
-      this.emit('error', err);
+    if (this._isReported(sourceKey)) {
+      this.emit('error', new Error('Packet source was previously reported: ' + String(rinfo)));
       return;
     }
 
-    const id = msg.readUInt32BE(lengths.CONTROL);
+    // First, check the length
+    const len = msg.length;
+    if (len < length.PACKET_MIN) {
+      this._report(rinfo);
+      this.emit('error', new Error('Invalid packet length: ' + String(len)));
+      return;
+    }
+
+    const id = msg.readUInt32BE(offset.ID);
 
     // Second, check that the control character and specific length are correct
     const c = msg[0] & control.MASK;
-    console.log('Control: ' + c);
+    debug('Control: ' + c);
     const encrypted = !!(c & control.ENCRYPTED);
     let isValid = false;
     switch (c & control.MASK) {
       case control.STREAM:
-        if ((encrypted && len >= lengths.STREAM_ENCRYPT)
-            || (!encrypted && len >= lengths.STREAM_DECRYPT)
+        if ((encrypted && len >= length.STREAM_ENCRYPT)
+            || (!encrypted && len >= length.STREAM_DECRYPT)
             && id
             && (encrypted || this.allowUnsafePacket))
         {
@@ -534,10 +537,10 @@ class Router extends EventEmitter {
         }
         break;
       case control.OPEN:
-        console.log('e: ' + lengths.SEAL_PADDING);
-        console.log('d: ' + lengths.OPEN_DECRYPT);
-        if (((encrypted && len === lengths.OPEN_ENCRYPT)
-            || (!encrypted && len === lengths.OPEN_DECRYPT))
+        debug('e: ' + length.SEAL_PADDING);
+        debug('d: ' + length.OPEN_DECRYPT);
+        if (((encrypted && len === length.OPEN_ENCRYPT)
+            || (!encrypted && len === length.OPEN_DECRYPT))
             && !id
             && this.allowIncoming
             && (encrypted || this.allowUnsafeOpen))
@@ -546,8 +549,8 @@ class Router extends EventEmitter {
         }
         break;
       case control.REJECT:
-        if (((encrypted && len === lengths.REJECT_ENCRYPT)
-            || (!encrypted && len === lengths.REJECT_DECRYPT))
+        if (((encrypted && len === length.REJECT_ENCRYPT)
+            || (!encrypted && len === length.REJECT_DECRYPT))
             && id
             && (encrypted || this.allowUnsafePacket))
         {
@@ -555,8 +558,8 @@ class Router extends EventEmitter {
         }
         break;
       case control.CHALLENGE:
-        if (((encrypted && len === lengths.CHALLENGE_ENCRYPT)
-            || (!encrypted && len === lengths.CHALLENGE_DECRYPT))
+        if (((encrypted && len === length.CHALLENGE_ENCRYPT)
+            || (!encrypted && len === length.CHALLENGE_DECRYPT))
             && id
             && (encrypted || this.allowUnsafePacket))
         {
@@ -564,8 +567,8 @@ class Router extends EventEmitter {
         }
         break;
       case control.ACCEPT:
-        if (((encrypted && len === lengths.ACCEPT_ENCRYPT)
-            || (!encrypted && len === lengths.ACCEPT_DECRYPT))
+        if (((encrypted && len === length.ACCEPT_ENCRYPT)
+            || (!encrypted && len === length.ACCEPT_DECRYPT))
             && id
             && this.allowIncoming
             && (encrypted || this.allowUnsafePacket))
@@ -578,37 +581,34 @@ class Router extends EventEmitter {
     }
 
     if (!isValid) {
-      const err = new Error('Invalid packet type from: ' + JSON.stringify(rinfo));
-      this.emit('error', err);
+      this._report(rinfo);
+      this.emit('error', new Error('Invalid packet type from: ' + JSON.stringify(rinfo)));
       return;
     }
 
-    // Extract basic header values
-    // TODO const rest = msg.slice(lengths.PACKET_PREFIX);
-    const conn = id ? this._getId(id) : null;
-    const seq = msg.slice(lengths.CONTROL, lengths.CONTROL + lengths.SEQUENCE);
-    if (conn) {
-      //const offset = lengths.CONTROL + lengths.ID;
-      // TODO pass through firewall
-      // TODO decrypt
-      // TODO pass along to connection
-    }
-    else if (c === control.OPEN) {
-      let connection = this.getAddress(rinfo);
+    if (c === control.OPEN) {
+      let connection = this._getAddress(sourceKey);
       if (!connection) {
+        if (!this._screenCb(routingBinary, rinfo)) {
+          this._report(sourceKey);
+          this.emit('error', new Error('Encountered screen offense.'));
+          return;
+        }
+
         const newId = this.newId();
-        connection = new Conn(newId);
-        connection.setSender(this.socket.mkSender(rinfo));
+        connection = new Connection(newId, this.socket.mkSender(rinfo));
         this.setId(newId, connection);
-        this.setAddress(rinfo, connection);
+        this.setAddress(sourceKey, connection);
       }
 
       if (connection) {
-        const buf = connection.firewall(msg.slice(lengths.PREFIX), seq, c, encrypted);
+        const buf = this._firewall();
+        //const buf = connection.firewall(msg.slice(length.PREFIX), seq, c, encrypted);
         if (buf) {
           connection.handleOpenPacket(buf, this.allowUnsafePacket);
         }
         else {
+          this._report(sourceKey);
           this.emit('error', new Error('Packet failed to pass firewall from: ' + JSON.stringify(rinfo)));
           return;
         }
@@ -619,9 +619,49 @@ class Router extends EventEmitter {
       }
     }
     else {
-      /* Error, ignore. */
-      this.emit('error', new Error('Invalid packet referencing non-existant connection'));
-      return;
+      const connection = id ? this._getId(id) : null;
+      if (connection) {
+        // TODO
+        const buf = connection.firewall();
+        if (buf) {
+          connection.packet();
+        }
+        else {
+          this._report(sourceKey);
+          this.emit('error', new Error('Packet failed the firewall: ' + String(rinfo)));
+        }
+      }
+      else {
+        this._report(sourceKey);
+        this.emit('error', new Error('Invalid packet referencing non-existant connection: ' + String(rinfo)));
+      }
+    }
+  }
+
+  /**
+   * Report source for poor conformance to protocol.
+   * @private
+   */
+  _report(sourceKey) {
+    if (this._delinq[sourceKey]) {
+      this._delinq[sourceKey] = this._delinq + 1;
+    }
+    else {
+      this._delinq[sourceKey] = 1;
+    }
+  }
+
+  /**
+   * Check if the sender has been reported before.
+   * @private
+   */
+  _isReported(sourceKey) {
+    const val = this._delinq[sourceKey];
+    if (val && val > 1) {
+      return true;
+    }
+    else {
+      return false;
     }
   }
 
@@ -797,6 +837,14 @@ class Router extends EventEmitter {
   }
 
   /**
+   * Set the screen callback function.
+   * @param {function} cb - The screening function.
+   */
+  screen(cb) {
+    this._screenCb = cb;
+  }
+
+  /**
    * Attempts to create a new connection over the socket.
    * @param {Object} dest - Required. The destination description. May vary depending on socket type.
    * @return A promise that will either return a connection or an error.
@@ -825,10 +873,10 @@ class Router extends EventEmitter {
     const promise = new Promise((resolve, reject) => {
       const id = router.newId();
       if (id && router.allowOutgoing) {
-        console.log('id = ' + String(id));
+        debug('id = ' + String(id));
         try {
           // Do we need to make the sender before the id?
-          const conn = new Conn(id);
+          const conn = new Connection(id);
           router.setId(id, conn);
           conn.on('connect', () => {
             resolve(conn);
@@ -840,19 +888,17 @@ class Router extends EventEmitter {
           conn.open(router.socket.mkSender(dest), options);
         }
         catch (err) {
-          console.log(err);
+          debug(err);
           reject(err);
         }
       }
       else {
-        let err = null;
         if (!id) {
-          err = new Error('Could not generate a unique ID');
+          reject(new Error('Could not generate a unique ID'));
         }
         else {
-          err = new Error('Router does not allow out-going connections.');
+          reject(new Error('Router does not allow out-going connections.'));
         }
-        reject(err);
       }
     });
     return promise;
