@@ -7,10 +7,11 @@ const EventEmitter = require('events');
 /* Community */
 const { Enum } = require('enumify');
 /* Custom */
-const crypto = require('./crypto.js');
-const { /* Unused: timeout, */ offset, length, control } = require('./spec.js');
 const Connection = require('./connection.js');
+const crypto = require('./crypto.js');
+const p = require('./parse.js');
 const { SocketInterface } = require('./socket.js');
+const { control, length, offset, reject, version } = require('./spec.js');
 const { debug, trace } = require('./util.js');
 
 
@@ -86,7 +87,7 @@ State.initEnum({
           this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
           return State.ERROR;
         case Event.STOP:
-          // TODO create special state for this case
+          this._setExpectSocketEvents();
           return State.CLOSE;
         default:
           this.emit('error', new Error('Expecting SOCKET* events. Found: ' + String(e.name)));
@@ -114,7 +115,7 @@ State.initEnum({
           return State.LISTEN;
         case Event.SOCKET_CLOSE:
           this.emit('error', new Error('SOCKET_CLOSE received before STOP.'));
-          return State.END;
+          return State.ERROR;
         case Event.STOP:
           return State.STOP_NOTIFY;
         default:
@@ -182,6 +183,11 @@ State.initEnum({
         case Event.SOCKET_CLOSE_TIMEOUT:
           return State.ERROR;
         default:
+          if (e.name.startsWith('SOCKET')) {
+            if (this._expectSocketEvents) {
+              return State.CLOSE;
+            }
+          }
           this.emit('error', new Error('Expecting SOCKET_CLOSE events. Found: ' + String(e.name)));
           return State.ERROR;
       }
@@ -292,6 +298,8 @@ class Router extends EventEmitter {
     this._stopTimeoutMs = 1000;
 
     this._screenCb = () => true;
+
+    this._expectSocketEvents = true;
 
     this._internalState = State.START;
     this._internalState.enter(this);
@@ -526,6 +534,7 @@ class Router extends EventEmitter {
     debug('Control: ' + c);
     const encrypted = !!(c & control.ENCRYPTED);
     let isValid = false;
+    // TODO create isSafe variable to give better reject codes
     switch (c & control.MASK) {
       case control.STREAM:
         if ((encrypted && len >= length.STREAM_ENCRYPT)
@@ -587,23 +596,43 @@ class Router extends EventEmitter {
     }
 
     if (c === control.OPEN) {
+      const ver = msg.readUInt16BE(offset.VERSION);
+      if (ver !== version) {
+        this._reject(msg, rinfo, reject.VERSION);
+        return;
+      }
+
       let connection = this._getAddress(sourceKey);
       if (!connection) {
-        if (!this._screenCb(routingBinary, rinfo)) {
+        const { routeLength, routeLengthOctets } = p.parseVarLength(msg, offset.ROUTE_LENGTH, 4);
+        if (routeLength < 0) {
+          this._report(sourceKey);
+          this._reject(msg, rinfo, reject.INVALID);
+          return;
+        }
+        const rOffset = offset.ROUTE_LENGTH + routeLengthOctets;
+        const routeBinary = msg.slice(rOffset, rOffset + routeLength);
+        if (!this._screenCb(routeBinary, rinfo)) {
+          // TODO need a feature in report to indicate reject message or not to prevent reflection attacks
           this._report(sourceKey);
           this.emit('error', new Error('Encountered screen offense.'));
+          this._reject(msg, rinfo, reject.USER);
           return;
         }
 
-        const newId = this.newId();
+        const newId = this._newId();
+        if (!newId) {
+          this._reject(msg, rinfo, reject.BUSY);
+          return;
+        }
         connection = new Connection(newId, this.socket.mkSender(rinfo));
         this.setId(newId, connection);
         this.setAddress(sourceKey, connection);
       }
 
       if (connection) {
-        const buf = this._firewall();
-        //const buf = connection.firewall(msg.slice(length.PREFIX), seq, c, encrypted);
+        const seq = msg.readUInt32BE(offset.SEQUENCE);
+        const buf = this._firewall(encrypted, c, seq, msg.slice(offset.OPEN_ENCRYPT));
         if (buf) {
           connection.handleOpenPacket(buf, this.allowUnsafePacket);
         }
@@ -693,6 +722,14 @@ class Router extends EventEmitter {
     trace();
 
     this._transition(Event.SOCKET_CLOSE);
+  }
+
+  /**
+   * Indicate that we may get some stray socket events.
+   * @private
+   */
+  _setExpectSocketEvents() {
+    this._expectSocketEvents = true;
   }
 
   /**
@@ -871,7 +908,7 @@ class Router extends EventEmitter {
     }
 
     const promise = new Promise((resolve, reject) => {
-      const id = router.newId();
+      const id = router._newId();
       if (id && router.allowOutgoing) {
         debug('id = ' + String(id));
         try {
