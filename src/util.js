@@ -5,6 +5,7 @@
 /* Core */
 /* Community */
 /* Custom */
+'use strict';
 
 
 const debug = function(msg) {
