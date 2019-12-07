@@ -88,8 +88,11 @@ length.REJECT_ENCRYPT = length.REJECT_DECRYPT + length.SEAL_PADDING;
  */
 const offset = {
   CONTROL: 0,
-  ID: length.CONTROL,
 };
+offset.ID = length.CONTROL;
+offset.SEQUENCE = offset.ID + length.ID;
+offset.VERSION = offset.ID + length.ID;
+offset.ROUTE_LENGTH = offset.VERSION + length.VERSION;
 
 /**
  * Default limit.
@@ -148,6 +151,7 @@ Object.freeze(limit);
 Object.freeze(control);
 Object.freeze(reject);
 Object.freeze(defaults);
+Object.freeze(m);
 module.exports = {
   version,
   timeout,
@@ -157,5 +161,6 @@ module.exports = {
   control,
   reject,
   defaults,
+  m,
 };
 
