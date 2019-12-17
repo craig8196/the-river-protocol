@@ -25,6 +25,13 @@ The following is the protocol specification.
 ## Overview
 TODO
 
+## VarInts and Serialization
+Variable length integers are denoted as "V" in the octets column.
+Variable length fields the length is listed first followed by data, denoted "VD".
+Note that the allowed length of a field may depend on implementation.
+Note that the allowed length may be limited by packet size.
+Use VarInts.
+See https://developers.google.com/protocol-buffers/docs/encoding
 
 ## Congestion Control
 Even with low levels of data transmission there should be congestion control.
@@ -112,7 +119,7 @@ These are the most common packet types, so zero is used.
 | 4 | ID
 | 4 | Sequence
 | 16 | Encrypt
-| Variable | STREAM_REQUESTS+
+| V | STREAM_REQUESTS+
 
 
 ### Reject
@@ -128,7 +135,7 @@ Considerations for DDoS Amplification should be taken into account.
 | 48 | Encrypt
 | 8 | Timestamp
 | 2 | Rejection type
-| 1+ | Message (Null terminated UTF-8 string, just null terminating byte if none)
+| VD | Message (UTF-8 string)
 
 Rejection types are:
 0 - Unknown/Other
@@ -164,11 +171,9 @@ scheme can be used.
 | 4 | ID (Zeros or ANY)
 | 4 | Sequence
 | 2 | Major Version ID
-// ?? TODO for routing so decryption doesn't need to take place
-| 1+ | Routing Length
-| V | Routing Information (Binary)
-// ?? XOR a hash of the above with ENCRYPT binary to determine if a message was tampered with??
+| VD | Routing Information (Binary)
 | 48 | Encrypt
+| 32 | Routing Hash
 | OPENING INFO |
 
 
@@ -324,12 +329,11 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 1+ | Stream Id
-| 1+ | Sequence
-| 1+ | Fragment
-| 1+ | Fragment Total
-| 2 | Payload Length
-| V | Payload
+| V | Stream Id
+| V | Sequence
+| V | Fragment
+| V | Fragment Total
+| VD | Payload
 
 
 ### Data Validate Received
@@ -337,9 +341,9 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 1+ | Stream Id
-| 1+ | Sequence
-| 1+ | Fragment
+| V | Stream Id
+| V | Sequence
+| V | Fragment
 
 
 ### Data Received
@@ -347,9 +351,9 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 1+ | Stream Id
-| 1+ | Sequence
-| 1+ | Fragment
+| V | Stream Id
+| V | Sequence
+| V | Fragment
 
 
 ### Backpressure
@@ -359,7 +363,7 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | 1 | Stream Control
 | 1 | Start/stop
 | 8 | Timestamp
-| 1+ | Stream Id
+| V | Stream Id
 
 
 ### Backpressure Confirm
@@ -369,7 +373,7 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | 1 | Stream Control
 | 1 | Start/stop
 | 8 | Timestamp
-| 1+ | Stream Id
+| V | Stream Id
 
 
 ### Close
@@ -377,8 +381,8 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 1+ | Stream Id
-| 1+ | Final sequence value
+| V | Stream Id
+| V | Final sequence value
 
 
 ### Close Confirm
@@ -386,8 +390,8 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
-| 1+ | Stream Id
-| 1+ | Final sequence value
+| V | Stream Id
+| V | Final sequence value
 
 
 ### Reconfigure
@@ -426,9 +430,11 @@ Creating IP packets with the return IP address and port set to the network to DD
 **Solution:**
 No known perfect solution.
 **TRiP:**
-Fixed by having known public key that is kept secret for OPEN connection.
+Fixed by first having known public key that is kept secret for OPEN connection.
+Additionally we can suppress reject messages for malformed OPEN messages.
 No perfect fix for public servers with unencryped OPEN or known public key.
-Mitigated by limiting OPEN packets and dropping invalid requests.
+Mitigated by limiting OPEN packets.
+Temporarily tracking "sender" can reduce reject messages or OPEN accepts.
 
 ### Packet Replay
 Sequences, nonce, control, timestamps.
@@ -436,6 +442,7 @@ Sequences, nonce, control, timestamps.
 ### Man-in-the-Middle
 No known perfect solution.
 Fixed by using public key known in advance for OPEN connection.
+Note that routing information may be tampered with.
 
 ### Man-in-the-Middle Through Packet Injection
 While this is tricky and unlikely due to timing there are ways of mitigating.
