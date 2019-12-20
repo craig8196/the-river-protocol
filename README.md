@@ -84,7 +84,7 @@ TODO items are added in the moment of coding when an issue is thought of.
 * [x] Go back to state machine setup (much easier to navigate and reason about).
 * [x] Should I just use ranges and a bitmap for window validation and packet replay protection?? Yes.
 * [ ] 
-* [ ] 
+* [ ] Update the connect challenge to forward repsonse to another server.
 * [ ] If sequence gets out of range, or too high, the connection should be reset.
 * [ ] Ensure that all event emissions are documented and consitant.
 * [ ] Determine invalid values for the source address in UDP packets
