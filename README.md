@@ -15,7 +15,7 @@ Greater data flexibility so the networking behavior fits the problem space.
 Event-based design for better application reactivity.
 Real-time capabilities, disabled by default for better network performance.
 Framework verbosity to provide information to applications for better
-performance (e.g. User MTU for single packet delivery).
+performance (e.g. User MTU for guaranteed single packet delivery).
 
 
 ## Why use TRiP?
@@ -35,7 +35,7 @@ TCP suffers from:
 * No unreliable send
 * No unordered, reliable messaging
 * No persistent connections if keep-alive fails
-  (can you place connection details into a database to resume later?)
+  (can you serialize connection details into a database to resume later?)
 * Connection breaks if IPs change or NAT changes
   (this is unfortunate and can disrupt services)
 * Dead connections kept alive by some load-balancer configurations
@@ -72,6 +72,24 @@ TRP suffers from:
 * Based on UDP and has associated limitations
 * If you're going to complain detail the problem thoroughly
   and have a solution ready if possible 
+
+
+## Contributing
+See TODO list below or any TODOs in the project.
+If you see something that needs improvement create a ticket.
+TODO items are added in the moment of coding when an issue is thought of.
+
+
+## TODOs
+* [x] Go back to state machine setup (much easier to navigate and reason about).
+* [x] Should I just use ranges and a bitmap for window validation and packet replay protection?? Yes.
+* [ ] 
+* [ ] 
+* [ ] If sequence gets out of range, or too high, the connection should be reset.
+* [ ] Ensure that all event emissions are documented and consitant.
+* [ ] Determine invalid values for the source address in UDP packets
+* [ ] Determine invalid values for the source port address in UDP packets (&lt; 1024?)
+* [ ] Estimate minimum packet size for the protocol to work (maybe if OPEN works, then protocol works)
 
 
 ## Features
