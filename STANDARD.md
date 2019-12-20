@@ -26,6 +26,7 @@ The following is the protocol specification.
 TODO
 
 ## VarInts and Serialization
+TODO should I use little or big endian ordering of 7 bit continuations?
 Variable length integers are denoted as "V" in the octets column.
 Variable length fields the length is listed first followed by data, denoted "VD".
 Note that the allowed length of a field may depend on implementation.
@@ -164,6 +165,7 @@ connection is significantly less than the current time, then we're experiencing
 packet replay and they should be dropped without a second thought.
 The Version ID is listed outside the encrypted data so the correct encryption
 scheme can be used.
+Use xchacha20poly1305 AEAD construction.
 
 | Octets | Field |
 |:------ |:----- |
@@ -172,8 +174,7 @@ scheme can be used.
 | 4 | Sequence
 | 2 | Major Version ID
 | VD | Routing Information (Binary)
-| 48 | Encrypt
-| 32 | Routing Hash
+| 48 | Encrypt AEAD
 | OPENING INFO |
 
 
@@ -189,11 +190,12 @@ If the OPENING INFO has different keys on resubmissions then it is considered ma
 | 4 | ID
 | 4 | Sequence
 | 2 | Major Version ID
-| 48 | Encrypt
+| 48 | Encrypt AEAD
 | OPENING INFO |
 
 
 ### OPENING INFO
+| 1 | Allowed stream types, cannot be zero.
 | 4 | Receiver ID for future responses/requests
 | 8 | Timestamp
 | 2 | Sender Max Currency
