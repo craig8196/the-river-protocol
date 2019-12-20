@@ -206,7 +206,7 @@ If the OPENING INFO has different keys on resubmissions then it is considered ma
 | 32 | Public key client (Zeroes if unencrypted)
 
 
-### Accept
+### Response
 Accept the server's CHALLENGE request.
 If the client does not respond with this then the connection is closed.
 The client cannot have lower limitations than the server.
@@ -440,6 +440,8 @@ Temporarily tracking "sender" can reduce reject messages or OPEN accepts.
 
 ### Packet Replay
 Sequences, nonce, control, timestamps.
+The use of AEAD constructions in OPEN messages and use of the sequence
+in combination with the nonce for decription.
 
 ### Man-in-the-Middle
 No known perfect solution.
