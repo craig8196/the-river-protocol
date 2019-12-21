@@ -151,7 +151,6 @@ Object.freeze(limit);
 Object.freeze(control);
 Object.freeze(reject);
 Object.freeze(defaults);
-Object.freeze(m);
 module.exports = {
   version,
   timeout,
@@ -161,6 +160,5 @@ module.exports = {
   control,
   reject,
   defaults,
-  m,
 };
 
