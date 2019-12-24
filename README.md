@@ -4,6 +4,9 @@
 The River Protocol (TRP, pronounced "trip", or written TRiP)
 is a flexible communications protocol.
 Fun, pretentious backronym could be: TCP Rest in Peace.
+Note that TRIP (capital "i") refers also to the interface specification.
+The River Interface is a generic API that allows the underlying implementation
+to be hidden while preserving as many features and semantics as possible.
 
 
 ## Goals
@@ -13,9 +16,11 @@ Security by default, transparent to user, to reduce vulnerabilities.
 Persistent, robust connections.
 Greater data flexibility so the networking behavior fits the problem space.
 Event-based design for better application reactivity.
-Real-time capabilities, disabled by default for better network performance.
+Real-time capabilities (disabled by default for better network performance).
 Framework verbosity to provide information to applications for better
 performance (e.g. User MTU for guaranteed single packet delivery).
+Future-proof, an programming interface and protocol that can be used over
+other mediums.
 
 
 ## Why use TRiP?
@@ -56,7 +61,7 @@ UDP suffers from:
 
 TRP suffers from:
 * Protocol details handled in user process
-  (some extra context switching)
+  (some extra context switching or system calls)
 * Needs another protocol on top
   (that is also part of the design)
 
@@ -70,7 +75,7 @@ TRP suffers from:
 * Not written for CPU/memory performance
 * The original author is not a security expert
 * Based on UDP and has associated limitations
-* If you're going to complain detail the problem thoroughly
+* If you're going to complain then detail the problem thoroughly
   and have a solution ready if possible 
 
 
@@ -80,7 +85,7 @@ If you see something that needs improvement create a ticket.
 TODO items are added in the moment of coding when an issue is thought of.
 
 
-## TODOs
+## TODO
 * [x] Go back to state machine setup (much easier to navigate and reason about).
 * [x] Should I just use ranges and a bitmap for window validation and packet replay protection?? Yes.
 * [ ] 
@@ -90,40 +95,55 @@ TODO items are added in the moment of coding when an issue is thought of.
 * [ ] Determine invalid values for the source address in UDP packets
 * [ ] Determine invalid values for the source port address in UDP packets (&lt; 1024?)
 * [ ] Estimate minimum packet size for the protocol to work (maybe if OPEN works, then protocol works)
+- [ ] Additional research on ICE
+- [ ] Research possible PKI scheme to increase security
+- [ ] Research possible custom DNS + CA/PKI combination
+- [ ] Research Byzantine fault tolerance and if there is any applicability in this protocol
+- [ ] Get the code and specification working.
+- [ ] Test code.
+- [ ] Finalize specs.
+- [ ] Re-work code to be in C.
 
 
-## Features
-**Versioning in Protocol:**
+## Protocol Features
+The following is detailed information on the protocol's features.
+
+### Versioning in Protocol
 Versioning in the protocol itself is necessary to update and enhance cryptography.
 With quantum computers threatening to break current standards the protocol
-must be forward thinking, just-in-case.
+must be forward thinking -- just-in-case.
 
-**Connectionless Design:**
-The over-arching architecture is client-server to reduce complexity.
-Peer-to-peer can be done using lower level tools.
+### Abstract Connection Oriented Design
+The recommended architecture is client-server to reduce complexity.
+Peer-to-peer can be done using lower level tools;
+peer-to-peer is more complex, thus waranting the need for lower level tools.
 If an IP changes then connections can resume based on their ID.
 If packets don't match the connection, or exhibit anything abnormal,
 then the packet is dropped.
 Pings are used to validate the connection and be robust against IP changes
 and help NAT traversal.
+(TODO sequence numbers are used for packet replay protection)
 Pings use a timestamp to prevent packet replay; pings are also used to
 determine EMTU.
 Connections are dropped if fowl play is detected.
 
 
-**Security First:**
+### Security First
 By default, each opened connection's data is encrypted after the initial
 handshake.
 The exception to encryption is when using Datagram Sockets.
 Encryption can be disabled, but is not recommended.
+AEAD constructions used where necessary to preserve integrity of unencrypted data.
 Each connection uses asymmetric encryption that requires two sets of keys.
 An initial public key is recommended for initiating a connection to protect
 clients from malicious interference like spoofing the server before the server
 can reply (man-in-the-middle type attacks).
-The user is notified of IP changes on a connection so whitelisting can be done.
+The user is notified of IP and routing information on a connection
+so whitelisting, routing/proxying, subprotocol verification can be done.
+Some light research indicates that libsodium is high quality and reasonably future-proof.
 
 
-**Message Based:**
+### Message Oriented
 While messages on a stream can be large and split for
 transmission/re-transmission they are delivered to the application atomically.
 This is where memory considerations of the application should be considered.
@@ -131,7 +151,7 @@ Guaranteed single packet delivery if size is
 less-than-or-equal-to UMTU, cannot send at all if size is greater-than UMMU.
 
 
-**Streams:**
+### Streams
 The river was chosen because data is often sent in streams.
 Each stream is...
 * cheap and easy to create (optimistic creation, handshake is used to destroy)
@@ -143,30 +163,33 @@ Each stream sends messages in one of the following ways:
 * Ordered/Reliable: Similar to WebSockets. TCP can easily be mimicked.
 * Ordered/UnReliable: Similar to UDP, but only the latest is delivered; earlier messages are discarded.
 * UnOrdered/Reliable: Similar to RUDP or message passing.
-* UnOrdered/UnReliable: UDP, except security is added.
+* UnOrdered/UnReliable: UDP, except security is added and partial messages not delivered.
 
 Streaming large files can be done with Ordered/Reliable messaging to keep the
 message sizes low.
-Using the UMMU can increase transmission speed and is a consideration for
+Using the UMTU can increase transmission speed and is a consideration for
 the protocol or application.
 
 
-**Limits:**
+### Limits
 The framework will be very easy to query for these limits.
 The framework will report User Maximum Transmission Unit (UMTU)
 and User Maximum Message Unit (UMMU) to user.
 Note that servers may impose additional restrictions, these are just the defaults.
-* Max open connections (no zeroeth ID): (2**32) - 1
-* Max open streams per open connection:  (2**16) - 1
-* Max messages per open ordered stream: (2**32) - 1
-* Max outstanding fragments per open connection: (2**16) - 1
+* Max open connections (no zeroeth ID): (2^32) - 1
+* Max open streams per open connection:  (2^16) - 1
+* Max messages per open ordered stream: (2^32) - 1
+* Max outstanding fragments per open connection: (2^16) - 1
 * Minimum UMTU: 576 - 20 - 8 - 1 - 4 - 4 - 16 - 1 - 2 - 4 - 2 - 2
-* Maximum message size: None, however, it needs to fit nicely in memory.
-* Min/Max ping: 15/300 seconds. Zero for off or infinite ping rate.
+* Starting UMTU: 1400 - 20 - 8 - 1 - 4 - 4 - 16 - 1 - 2 - 4 - 2 - 2
+* Maximum message size: 256kB, it needs to fit nicely in memory.
+* Min/Max ping: 15/300 seconds or longer. Zero for off (not recommended).
 
 
-## Design Choices and Notes
-**Multi Interface Bindings:**
+## Protocol Design Choices and Notes
+Discussion of why some choices were made.
+
+### Multi Interface Bindings
 Disallowed since not all operating systems allow you to determine the interface
 a packet was received on and Node.js doesn't support it.
 Bind to a single interface and single port.
@@ -179,21 +202,21 @@ messages on? Clearly one must be chosen for a send to take place.
 Perhaps I need to do more research here.
 
 
-**Connection IDs:**
+### Connection IDs
 Originally I was going to use a 16 octet UUID to identify traffic to an endpoint.
 However, given that lookups must be performed on even spoofed messages
 and the power of an attacker is greater than that of a server,
 I think that even an 8 octet identifier is overkill.
 Four octets give us the ability to easily extract the number
 and easily check against a map;
-with (2**31)-1 possible combinations (zero omitted, upper bit reserved)
+with (2^31)-1 possible combinations (zero omitted, upper bit reserved)
 there should be enough space for a single endpoint without making
 it too easy to spoof connection IDs.
 Attempts at spoofing of connection IDs should be expected.
 Also, this utilizes less space in the packet.
 
 
-**Keep Alive:**
+### Keep Alive
 NATs require a 2 minute minimum timeout, however, in practice the timeouts
 tend to be shorter.
 It is recommended that keep alives should be a minimum of 15 seconds.
@@ -203,12 +226,12 @@ The following recommends 15-20 seconds:
 https://tools.ietf.org/html/rfc5245
 
 
-**MTU:**
+### MTU
 Hopefully a PLPMTUD implementation can be had, but to start we'll use the
 recommended default MTU.
 The first ping will start the PLPMTUD algorithm.
-The recommended search_low for MTU discovery is 1024.
-The recommended eff_pmtu is 1400.
+The recommended `search_low` for MTU discovery is 1024.
+The recommended `eff_pmtu` is 1400.
 The recommended Ethernet probe size is 1500.
 The following is a list of MTUs:
 1500 - Ethernet.
@@ -219,7 +242,7 @@ The following is a list of MTUs:
 1400 - AOl DSL.
  576 - Dial-up.
 
-Default effective MTU (EMTU_S):
+Default effective MTU (`EMTU_S`):
 This does not account for the IP header or UDP header.
 IPv4: 576 (absolute low is 68)
 IPv6: 1280
@@ -229,17 +252,6 @@ Packetization Layer Path MTU Discovery (PLPMTUD):
 Robust methodology for discovering the MTU on a path. Not suseptible to ICMP 
 black holes and ICMP support.
 https://tools.ietf.org/html/rfc4821
-
-
-## TODO
-- [ ] Additional research on ICE
-- [ ] Research possible PKI scheme to increase security
-- [ ] Research possible custom DNS + CA/PKI combination
-- [ ] Research Byzantine fault tolerance and if there is any applicability in this protocol
-- [ ] Get the code and specification working.
-- [ ] Test code.
-- [ ] Finalize specs.
-- [ ] Re-work code to be in C.
 
 
 ## Abbreviation Map
@@ -257,21 +269,40 @@ UMMS: User MMS
 UMTU: User MTU
 
 
-## Dependencies/Technologies
+## Node.js
+Node.js was chosen for the mockup in this repository.
+Node.js has asynchronous behavior.
+The implementation in this repository is intended to allow for adjusting and
+fine-tuning the design and chosen algorithms.
+
+
+### Dependencies
+See package.json for extra or dev dependencies.
+
+Native:
 * dgram: For sending data fast and independent of order.
+
+Community:
+* enumify: For creating enums used in state-machines.
 * long: For timestamps and uint64 type values.
 * sodium-native: For security. Seems to have the best interface and support.
-* See package.json for minor dependencies.
+
+
+### Buffers
+The `Buffer.allocUnsafe` method is used for performance and should be used for short-term values;
+it slices peices of memory from ~4k sized slabs for speed.
+However, `Buffer.allocUnsafeSlow` should be used for longer lived values.
+While speed isn't the goal using a languages library correctly is still important.
 
 
 ## C Implementation Dependencies
 * libc
 * OS provided UDP socket interface
-* libcares: For DNS resolution, can be omitted for direct IP and custom builds.
-* libsodium: For security.
+* libcares: For DNS resolution, optional for direct IP and custom builds.
+* libsodium: For security. Demonstrates efficient and easy-to-use encryption.
 
 
-## Sources
+## References | Sources
 1. https://tools.ietf.org/html/rfc768
 1. https://tools.ietf.org/html/rfc8085
 1. https://tools.ietf.org/html/rfc793
