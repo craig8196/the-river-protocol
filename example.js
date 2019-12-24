@@ -1,6 +1,10 @@
-
+/**
+ * @file Example usage of TRIP.
+ */
 const trip = require('./src/trip.js');
-const { info } = require('./src/util.js');
+const { info, warn } = require('./src/util.js');
+const { defaults } = require('./src/spec.js');
+
 
 // Create server object.
 // Server is started at end of script.
@@ -31,7 +35,7 @@ server.on('listen', () => {
 
     // By default the framework should convert the string to UTF-8.
     stream.send('Hello, world!');
-    stream.send('Take a round TRiP!');
+    stream.send('Take a round TRIP!');
 
     client.close();
   });
@@ -63,7 +67,7 @@ server.on('listen', () => {
   });
 
   // Now we tell to connect.
-  client.open({ address: 'localhost', port: PORT });
+  client.open({ address: 'localhost', port: defaults.PORT });
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
