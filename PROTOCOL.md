@@ -1,7 +1,7 @@
 
 
-# TRiP SPECIFICATION
-The following is the protocol specification.
+# TRiP PROTOCOL SPECIFICATION
+The details. Onwaaaard!
 
 
 ## Definitions and Terms
@@ -26,12 +26,11 @@ The following is the protocol specification.
 TODO
 
 ## VarInts and Serialization
-TODO should I use little or big endian ordering of 7 bit continuations?
 Variable length integers are denoted as "V" in the octets column.
 Variable length fields the length is listed first followed by data, denoted "VD".
 Note that the allowed length of a field may depend on implementation.
 Note that the allowed length may be limited by packet size.
-Use VarInts.
+Use variable integral type encoding which are little endian.
 See https://developers.google.com/protocol-buffers/docs/encoding
 
 ## Congestion Control
