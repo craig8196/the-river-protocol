@@ -2,7 +2,7 @@
  * @file Example usage of TRIP.
  */
 const trip = require('./src/trip.js');
-const { info, warn } = require('./src/util.js');
+const { info, crit } = require('./src/util.js');
 const { defaults } = require('./src/spec.js');
 
 
@@ -55,7 +55,7 @@ server.on('listen', () => {
 
   // An error occurred, shut everything down.
   client.on('error', (err) => {
-    warn('Client error: ' + String(err));
+    crit('Client error: ' + String(err));
     server.stop();
     client.close();
   });
@@ -102,7 +102,7 @@ server.on('accept', (client) => {
 
   // Log any errors the client causes.
   client.on('error', (err) => {
-    warn('Incoming client had an error: ' + String(err));
+    crit('Incoming client had an error: ' + String(err));
   });
 });
 
@@ -114,7 +114,7 @@ server.on('stop', () => {
 // Server has an error.
 // We should check if the error is critical or not...
 server.on('error', (err) => {
-  warn('Server error: ' + String(err));
+  crit('Server error: ' + String(err));
 });
 
 server.start();
