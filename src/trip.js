@@ -10,12 +10,13 @@ const { mkKeyPair } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
 const { mkRouter } = require('./router.js');
 const { defaults } = require('./spec.js');
-const { trace } = require('./log.js');
+const { trace, info, warn } = require('./log.js');
 'use strict';
 
 
 /**
  * The server wrapper class hides the ability to open connections.
+ * Events are forwarded to the router instance.
  */
 class Server extends EventEmitter {
   constructor(router) {
@@ -24,14 +25,13 @@ class Server extends EventEmitter {
     trace();
 
     this._router = router;
-    /* Allow registration. */
-    this._allowReg = true;
+    this._allowRegistration = true;
   }
 
   on() {
     trace();
 
-    if (this._allowReg) {
+    if (this._allowRegistration) {
       this._router.on.apply(this._router, arguments);
     }
   }
@@ -39,7 +39,7 @@ class Server extends EventEmitter {
   off() {
     trace();
 
-    if (this._allowReg) {
+    if (this._allowRegistration) {
       this._router.off.apply(this._router, arguments);
     }
   }
@@ -47,8 +47,12 @@ class Server extends EventEmitter {
   start() {
     trace();
 
-    this._allowReg = false;
+    this._allowRegistration = false;
     this._router.start();
+  }
+
+  screen(cb) {
+    this._router.screen(cb);
   }
 
   stop() {
@@ -60,7 +64,7 @@ class Server extends EventEmitter {
   reset() {
     trace();
 
-    this._allowReg = true;
+    this._allowRegistration = true;
     this._router.reset();
   }
 }
@@ -73,7 +77,7 @@ class Server extends EventEmitter {
 function mkServer(socket, options) {
   trace();
 
-  if (!(socket instanceof 'SocketInterface')) {
+  if (!(socket instanceof SocketInterface)) {
     let port = socket;
     if (typeof socket !== 'number') {
       port = defaults.PORT;
@@ -94,6 +98,8 @@ function mkServer(socket, options) {
 /**
  * The client wrapper class forbids incoming connections and only allows one
  * outgoing connection.
+ * Events are intercepted since the terminology with a Client is different
+ * from the Router/Server.
  */
 class Client extends EventEmitter {
   /*
@@ -111,9 +117,19 @@ class Client extends EventEmitter {
     this._dest = null;
     this._conn = null;
     this._isClosed = false;
-    this._allowReg = true;
+    this._allowRegistration = true;
 
+    this._setListeners();
+  }
+
+  _setListeners() {
     const client = this;
+
+    function handleError(err) {
+      trace();
+
+      client.emit('error', err);
+    }
 
     function handleStart() {
       trace();
@@ -125,15 +141,17 @@ class Client extends EventEmitter {
 
       // Create the connection and emit 'open' when connected.
       client._isListening = true;
-      console.log('mkConnection');
       const promise = client._router.mkConnection(client._dest);
-      console.log('post mkConnection');
       promise
         .then((conn) => {
+          trace();
+
           client.emit('open');
           client._conn = conn;
         })
         .catch((err) => {
+          trace();
+
           client.emit('error', err);
           client.close();
         });
@@ -144,24 +162,28 @@ class Client extends EventEmitter {
 
       // We're done, emit 'close' and deactivate everything.
       client.emit('close');
-      client._cleanup();
+      client._clearListeners();
     }
 
-    this.handleStart = handleStart;
-    this.handleListen = handleListen;
-    this.handleStop = handleStop;
+    // TODO prefix with _
+    this._handleRouterError = handleError;
+    this._handleRouterStart = handleStart;
+    this._handleRouterListen = handleListen;
+    this._handleRouterStop = handleStop;
 
-    router.on('start', this.handleStart);
-    router.on('listen', this.handleListen);
-    router.on('stop', this.handleStop);
+    this._router.on('error', this._handleRouterError);
+    this._router.on('start', this._handleRouterStart);
+    this._router.on('listen', this._handleRouterListen);
+    this._router.on('stop', this._handleRouterStop);
   }
 
-  _cleanup() {
+  _clearListeners() {
     trace();
 
-    this._router.off('start', this.handleStart);
-    this._router.off('listen', this.handleListen);
-    this._router.off('stop', this.handleStop);
+    this._router.off('error', this._handleRouterError);
+    this._router.off('start', this._handleRouterStart);
+    this._router.off('listen', this._handleRouterListen);
+    this._router.off('stop', this._handleRouterStop);
 
     this._isListening = false;
     this._router = null;
@@ -173,16 +195,16 @@ class Client extends EventEmitter {
   on() {
     trace();
 
-    if (this._allowReg) {
-      this._router.on.apply(this._router, arguments);
+    if (this._allowRegistration) {
+      EventEmitter.prototype.on.apply(this, arguments);
     }
   }
 
   off() {
     trace();
 
-    if (this._allowReg) {
-      this._router.off.apply(this._router, arguments);
+    if (this._allowRegistration) {
+      EventEmitter.prototype.off.apply(this, arguments);
     }
   }
 
@@ -197,7 +219,7 @@ class Client extends EventEmitter {
   open(dest) {
     trace();
 
-    this._allowReg = false;
+    this._allowRegistration = false;
 
     this._dest = dest;
     if (!this._isListening) {
@@ -217,13 +239,12 @@ class Client extends EventEmitter {
 
     if (!this._isClosed) {
       this._isClosed = true;
-      console.log('close client');
       if (this._isListening) {
         this._router.stop();
       }
       else {
         this.emit('close');
-        this._cleanup();
+        this._clearListeners();
       }
     }
   }

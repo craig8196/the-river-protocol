@@ -10,9 +10,9 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 const Long = require('long');
 /* Custom */
-const { version, timeouts, lengths, limits, control, reject } = require('./spec.js');
+const { version, lengths, control, reject } = require('./spec.js');
 const crypto = require('./crypto.js');
-const shared = require('./shared.js');
+const { trace } = require('./log.js');
 'use strict';
 
 
@@ -229,34 +229,221 @@ function unPing(out, buf) {
   return true;
 }
 
-class State extends Enum {}
-State.initEnum([
-  'CREATE',
+class Event extends Enum {}
+Event.initEnum([
   'OPEN',
+  'OPEN_RECV',
+  'OPEN_TIMEOUT',
   'CHALLENGE',
-  'ACCEPT',
-  'CONNECT',
+  'CHALLENGE_RECV',
+  'CHALLENGE_TIMEOUT',
+  'RESPONSE',
+  'RESPONSE_RECV',
+  'RESPONSE_TIMEOUT',
+  'STREAM_RECV',
+  'REJECT_RECV',
   'DISCONNECT',
-  'END'
 ]);
+
+class State extends Enum {}
+State.initEnum({
+  'START': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.OPEN:
+          return State.OPEN;
+        case Event.OPEN_RECV:
+          // TODO parse open message
+          return State.CHALLENGE;
+        default:
+          this.emit('error', new Error('Expected OPEN* events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'OPEN': {
+    enter() {
+      if (!this._selfKeys && this._allowUnsafePacket) {
+        this._selfKeys = crypto.mkKeyPair();
+        this._selfNonce = crypto.mkNonce();
+      }
+      this._startOpenAlgorithm();
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.OPEN_TIMEOUT:
+          //TODO handle open timeout event
+          this.emit('error', new Error('Unimplemented case: ' + String(e.name)));
+          return State.ERROR;
+        case Event.CHALLENGE_RECV:
+          // TODO process CHALLENGE
+          this.emit('error', new Error('Unimplemented case: ' + String(e.name)));
+          return State.RESPONSE;
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'CHALLENGE': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'RESPONSE': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'READY': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'DISCONNECT_SOFT': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'DISCONNECT_HARD': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'DISCONNECT_ERROR': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'END': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+
+  'ERROR': {
+    enter() {
+    },
+
+    transition(e) {
+      switch (e) {
+        default:
+          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+    },
+  },
+});
 
 // TODO make sure that streams obey pipe semantics
 // TODO add mkStream method on connection
 // TODO add hasStream method to determine if an ID is taken
 // TODO add getStreamId for random, or next, stream ID
 class Connection extends EventEmitter {
-  constructor(id, sender) {
+  constructor(id, sender, options) {
     super();
 
-    this.id = id;
-    this.sender = sender;
-    this.streams = new Map();
+    trace();
 
-    this.encrypted = true;
-    this.timestamp = null;
+    this._id = id;
+    this._sender = sender;
+    this._streams = new Map();
+    this._openKey = options.keys;
+    this._allowUnsafePacket = options.allowUnsafePacket;
 
-    this.state = State.CREATE;
-
+    /*
+    // TODO verify how these need to be organized
     this.data = null;
 
     this.buffers = [];
@@ -269,28 +456,89 @@ class Connection extends EventEmitter {
     this.sequence = 0;
     this.sequenceWindow = lengths.WINDOW;
 
-    this.rttMs = timeouts.RTT; /* Average */
+    this.rttMs = timeouts.RTT;
     this.rttTotal = timeouts.RTT;
     this.rttCount = 1;
 
-    this.limits = {};
-    this.limits.currency = limits.CURRENCY;
-    this.limits.streams = limits.STREAMS;
-    this.limits.messages = limits.MESSAGES;
+    this._maxCurrency = limits.CURRENCY;
+    this._maxStreams = limits.STREAMS;
+    this._maxMessages = limits.MESSAGES;
 
-    this.peer = {};
-    this.peer.publicKeyOpen = null;
-    this.peer.minSequence = -1;
-    this.peer.midSequence = -1;
-    this.peer.maxSequence = -1;
+    this._curCurrency = limits.CURRENCY;
+    this._curStreams = limits.STREAMS;
+    this._curMessages = limits.MESSAGES;
 
-    this.flagPeerSequence(0);
+    this._peerMinSeq = -1;
+    this._peerMidSeq = -1;
+    this._peerMaxSeq = -1;
+    */
+    this._peerKey = null;
+    this._selfKeys = null;
+    this._peerNonce = null;
+    this._selfNonce = null;
+
+    this._internalState = State.START;
+    this._internalState.enter();
+
+    // TODO
+    //this._flagPeerSequence(0);
     console.log('sequences: ' + JSON.stringify(this.peer));
   }
 
-  setSender(sender) {
-    this.sender = sender;
+  /**
+   * Get the internal state.
+   * @private
+   * @return {State}
+   */
+  get _state() {
+    return this._internalState;
   }
+
+  /**
+   * Set the internal state with appropriate events emitted as needed.
+   * @private
+   * @param {State} newState - The state to setup with. No-op if same state.
+   */
+  set _state(newState) {
+    if (this._internalState !== newState) {
+      this._internalState.exit.call(this);
+      this._internalState = newState;
+      this._internalState.enter.call(this);
+    }
+    else {
+      /* Transitioning to same state doesn't change anything. */
+    }
+  }
+
+  /**
+   * Perform the transition and change states as needed.
+   * @private
+   */
+  _transition(eventType, eventData) {
+    this._state = this._state.transition.call(this, eventType, eventData);
+  }
+
+  /**
+   * Add the sender.
+   */
+  setSender(sender) {
+    this._sender = sender;
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   // TODO allow the router to set the window
 
@@ -333,7 +581,7 @@ class Connection extends EventEmitter {
     return true;
   }
 
-  flagPeerSequence(seq) {
+  _flagPeerSequence(seq) {
     if (seq > this.peer.midSequence) {
       this.peer.minSequence = seq - this.sequenceWindow;
       this.peer.midSequence = seq;
@@ -428,7 +676,7 @@ class Connection extends EventEmitter {
       }
     }
 
-    this.flagPeerSequence(sequence);
+    this._flagPeerSequence(sequence);
 
     return buf;
   }
@@ -856,56 +1104,22 @@ class Connection extends EventEmitter {
 
   /**
    * Open this connection. The handshake process will begin.
-   * @param {Sender} sender - The object used to send packets to the correct destination.
-   * @param {Object} options - The security requirements of the destination.
-   * @param {Buffer} options.publicKey - The binary public key as returned from mkKeyPair used to ensure we are connecting to the correct server.
-   * @param {boolean} options.encrypt - Flag to indicate if further communications past the opening packet are to be encrypted.
    */
-  open(sender, options) {
-    switch (this.state) {
-      case State.CREATE:
-        {
-          // Save the sender.
-          this.sender = sender;
+  open() {
+    this._transition(Event.OPEN);
+  }
 
-          // Encrypt the open request.
-          if (options && options.publicKey) {
-            // TODO need to copy externally passed buffers for added reliability?
-            // Or in the mk functions perform the duplication.
-            this.peer.publicKeyOpen = options.publicKey;
-          }
-
-          // Encrypt packets.
-          if (options && options.encrypt) {
-            this.keys = crypto.mkKeyPair();
-            this.nonce = crypto.mkNonce();
-            this.encrypt = true;
-          }
-
-          // Go to new state.
-          this.state = State.OPEN;
-          this.emit('open');
-
-          // Set our timestamp.
-          this.timestamp = shared.mkTimeNow();
-
-          // Start open algorithm.
-          this.startOpen();
-        }
-        break;
-      default:
-        {
-          const err = new Error('Unexpected open call');
-          this.emit('error', err);
-        }
-        break;
-    }
+  /**
+   * Parse and process a packet.
+   */
+  packet() {
+    // TODO
   }
 
   /**
    * Start the open connection handshake.
    */
-  startOpen() {
+  _startOpen() {
     function openCycle(conn, counter, timeout) {
       if (conn.state === State.OPEN) {
         counter++;
@@ -1039,5 +1253,13 @@ class Connection extends EventEmitter {
   }
 }
 
-module.exports = Connection;
+
+function mkConnection(id, sender, options) {
+  // TODO vet options and set smart defaults
+  return new Connection(id, sender, options);
+}
+
+module.exports = {
+  mkConnection,
+};
 

@@ -7,12 +7,12 @@ const EventEmitter = require('events');
 /* Community */
 const { Enum } = require('enumify');
 /* Custom */
-const Connection = require('./connection.js');
+const { mkConnection } = require('./connection.js');
 const crypto = require('./crypto.js');
 const p = require('./parse.js');
 const { SocketInterface } = require('./socket.js');
 const { control, length, offset, reject, version } = require('./spec.js');
-const { debug, trace } = require('./util.js');
+const { debug, trace } = require('./log.js');
 
 
 /*
@@ -35,12 +35,13 @@ Event.initEnum([
   'STOP_ZERO_CONNECTIONS',
 ]);
 
+/* Note that "this" refers to the associated Router object. */
 class State extends Enum {}
 State.initEnum({
-  /* All state machines start at START, right? */
+  /* All state machines start at START. */
   'START': {
-    enter(router) {
-      router._setListeners();
+    enter() {
+      this._setListeners();
     },
 
     transition(e) {
@@ -131,7 +132,7 @@ State.initEnum({
 
   'STOP_NOTIFY': {
     enter() {
-      this._setStopNotifyTimeout();
+      this._setStopTimeout();
       /* Odd condition where timeout doesn't get cleared if zero connections
        * and is called before the timeout is set.
        */
@@ -164,7 +165,7 @@ State.initEnum({
     },
 
     exit() {
-      this._clearStopNotifyTimeout();
+      this._clearStopTimeout();
     },
   },
 
@@ -278,15 +279,11 @@ class Router extends EventEmitter {
 
     trace();
 
-    if (!options) {
-      options = {};
-    }
-
     this._socket = socket;
     this._map = new Map();
     this._addresses = new Map();
 
-    this._keys = options.keys;
+    this._openKeys = options.keys;
     this._maxConnections = options.maxConnections;
     this._allowIncoming = options.allowIncoming;
     this._allowOutgoing = options.allowOutgoing;
@@ -297,12 +294,12 @@ class Router extends EventEmitter {
     this._closeTimeoutMs = 1000;
     this._stopTimeoutMs = 1000;
 
-    this._screenCb = () => true;
+    this._screenCb = () => { return true; };
 
     this._expectSocketEvents = true;
 
     this._internalState = State.START;
-    this._internalState.enter(this);
+    this._internalState.enter.call(this);
   }
 
   /**
@@ -342,7 +339,7 @@ class Router extends EventEmitter {
    * Register listeners.
    * @private
    */
-  _setupListeners() {
+  _setListeners() {
     trace();
 
     const router = this;
@@ -389,10 +386,10 @@ class Router extends EventEmitter {
     this._handleSocketListening = handleListening;
     this._handleSocketClose = handleClose;
 
-    this.socket.on('error', handleError);
-    this.socket.on('message', handleMessage);
-    this.socket.on('listening', handleListening);
-    this.socket.on('close', handleClose);
+    this._socket.on('error', handleError);
+    this._socket.on('message', handleMessage);
+    this._socket.on('listening', handleListening);
+    this._socket.on('close', handleClose);
   }
 
   /**
@@ -402,10 +399,10 @@ class Router extends EventEmitter {
   _cleanupListeners() {
     trace();
 
-    this.socket.off('error', this._handleSocketError);
-    this.socket.off('message', this._handleSocketMessage);
-    this.socket.off('listening', this._handleSocketListening);
-    this.socket.off('close', this._handleSocketClose);
+    this._socket.off('error', this._handleSocketError);
+    this._socket.off('message', this._handleSocketMessage);
+    this._socket.off('listening', this._handleSocketListening);
+    this._socket.off('close', this._handleSocketClose);
   }
 
   /**
@@ -540,7 +537,7 @@ class Router extends EventEmitter {
         if ((encrypted && len >= length.STREAM_ENCRYPT)
             || (!encrypted && len >= length.STREAM_DECRYPT)
             && id
-            && (encrypted || this.allowUnsafePacket))
+            && (encrypted || this._allowUnsafePacket))
         {
           isValid = true;
         }
@@ -551,8 +548,8 @@ class Router extends EventEmitter {
         if (((encrypted && len === length.OPEN_ENCRYPT)
             || (!encrypted && len === length.OPEN_DECRYPT))
             && !id
-            && this.allowIncoming
-            && (encrypted || this.allowUnsafeOpen))
+            && this._allowIncoming
+            && (encrypted || this._allowUnsafeOpen))
         {
           isValid = true;
         }
@@ -561,7 +558,7 @@ class Router extends EventEmitter {
         if (((encrypted && len === length.REJECT_ENCRYPT)
             || (!encrypted && len === length.REJECT_DECRYPT))
             && id
-            && (encrypted || this.allowUnsafePacket))
+            && (encrypted || this._allowUnsafePacket))
         {
           isValid = true;
         }
@@ -570,7 +567,7 @@ class Router extends EventEmitter {
         if (((encrypted && len === length.CHALLENGE_ENCRYPT)
             || (!encrypted && len === length.CHALLENGE_DECRYPT))
             && id
-            && (encrypted || this.allowUnsafePacket))
+            && (encrypted || this._allowUnsafePacket))
         {
           isValid = true;
         }
@@ -579,8 +576,8 @@ class Router extends EventEmitter {
         if (((encrypted && len === length.ACCEPT_ENCRYPT)
             || (!encrypted && len === length.ACCEPT_DECRYPT))
             && id
-            && this.allowIncoming
-            && (encrypted || this.allowUnsafePacket))
+            && this._allowIncoming
+            && (encrypted || this._allowUnsafePacket))
         {
           isValid = true;
         }
@@ -613,7 +610,7 @@ class Router extends EventEmitter {
         const rOffset = offset.ROUTE_LENGTH + routeLengthOctets;
         const routeBinary = msg.slice(rOffset, rOffset + routeLength);
         if (!this._screenCb(routeBinary, rinfo)) {
-          // TODO need a feature in report to indicate reject message or not to prevent reflection attacks
+          // TODO need a feature in report to indicate reject message or not, to prevent reflection attacks
           this._report(sourceKey);
           this.emit('error', new Error('Encountered screen offense.'));
           this._reject(msg, rinfo, reject.USER);
@@ -625,7 +622,7 @@ class Router extends EventEmitter {
           this._reject(msg, rinfo, reject.BUSY);
           return;
         }
-        connection = new Connection(newId, this.socket.mkSender(rinfo));
+        connection = mkConnection(newId, this._socket.mkSender(rinfo));
         this.setId(newId, connection);
         this.setAddress(sourceKey, connection);
       }
@@ -634,7 +631,7 @@ class Router extends EventEmitter {
         const seq = msg.readUInt32BE(offset.SEQUENCE);
         const buf = this._firewall(encrypted, c, seq, msg.slice(offset.OPEN_ENCRYPT));
         if (buf) {
-          connection.handleOpenPacket(buf, this.allowUnsafePacket);
+          connection.handleOpenPacket(buf, this._allowUnsafePacket);
         }
         else {
           this._report(sourceKey);
@@ -711,7 +708,7 @@ class Router extends EventEmitter {
   _socketBind() {
     trace();
 
-    this._transition(Event.SOCKET_CLOSE);
+    this._transition(Event.SOCKET_BIND);
   }
 
   /**
@@ -741,7 +738,7 @@ class Router extends EventEmitter {
 
     const router = this;
     function _bindTimeout() {
-      router.transition(Event.SOCKET_CLOSE_TIMEOUT);
+      router._transition(Event.SOCKET_CLOSE_TIMEOUT);
     }
     this._bindTimeoutHandle = setTimeout(_bindTimeout, this._bindTimeoutMs);
   }
@@ -768,7 +765,7 @@ class Router extends EventEmitter {
 
     const router = this;
     function _closeTimeout() {
-      router.transition(Event.SOCKET_CLOSE_TIMEOUT);
+      router._transition(Event.SOCKET_CLOSE_TIMEOUT);
     }
     this._closeTimeoutHandle = setTimeout(_closeTimeout, this._closeTimeoutMs);
   }
@@ -808,10 +805,10 @@ class Router extends EventEmitter {
     }
 
     function zeroConnections() {
-      router.transition(Event.STOP_ZERO_CONNECTIONS);
+      router._transition(Event.STOP_ZERO_CONNECTIONS);
     }
 
-    if (!this.map.size) {
+    if (!this._map.size) {
       setImmediate(zeroConnections);
     }
     else if (this._socket.isClosed()) {
@@ -831,7 +828,7 @@ class Router extends EventEmitter {
   _setStopTimeout() {
     const router = this;
     function _stopTimeout() {
-      router.transition(Event.STOP_TIMEOUT);
+      router._transition(Event.STOP_TIMEOUT);
     }
     this._stopTimeoutHandle = setTimeout(_stopTimeout, this._stopTimeoutMs);
   }
@@ -870,7 +867,7 @@ class Router extends EventEmitter {
       this._stopTimeoutMs = graceMs;
     }
 
-    this.transition(Event.STOP);
+    this._transition(Event.STOP);
   }
 
   /**
@@ -884,59 +881,71 @@ class Router extends EventEmitter {
   /**
    * Attempts to create a new connection over the socket.
    * @param {Object} dest - Required. The destination description. May vary depending on socket type.
+   * @param {Object} options - Optional.
+   * @param {keys} options.keys - TODO.
+   * @param {boolean} [options.allowUnsafePacket=false] - Allow unsafe communications.
    * @return A promise that will either return a connection or an error.
    */
-  mkConnection(dest) {
+  mkConnection(dest, options) {
     trace();
 
-    // Internally the connection is called a conn, but these details don't
-    // need to be known to the user
     const router = this;
-    const options = {};
 
-    if (dest.publicKey) {
-      options.publicKey = dest.publicKey;
-      delete dest.publicKey;
+    if (!options) {
+      options = {};
     }
 
-    if (dest.encrypt) {
-      options.encrypt = true;
-      delete options.encrypt;
-    }
-    else if (dest.encrypt === undefined || dest.encrypt === null) {
-      options.encrypt = true;
-    }
+    options.allowUnsafePacket =
+      'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
 
     const promise = new Promise((resolve, reject) => {
-      const id = router._newId();
-      if (id && router.allowOutgoing) {
-        debug('id = ' + String(id));
-        try {
-          // Do we need to make the sender before the id?
-          const conn = new Connection(id);
-          router.setId(id, conn);
-          conn.on('connect', () => {
-            resolve(conn);
-          });
-          conn.on('error', (err) => {
-            router.delId(id);
-            reject(err);
-          });
-          conn.open(router.socket.mkSender(dest), options);
-        }
-        catch (err) {
-          debug(err);
-          reject(err);
-        }
-      }
-      else {
-        if (!id) {
-          reject(new Error('Could not generate a unique ID'));
+      setTimeout(() => {
+        const id = router._newId();
+        if (id && router._allowOutgoing) {
+          debug('Connection.id = ' + String(id));
+          debug('Connection.dest = ' + String(dest));
+          try {
+            const sender = router._socket.mkSender(dest);
+            const conn = mkConnection(id, sender, options);
+            router._setId(id, conn);
+            conn.on('connect', () => {
+              resolve(conn);
+            });
+            conn.on('error', (err) => {
+              router._delId(id);
+              try {
+                reject(err);
+              }
+              catch (errReject) {
+                router.emit('error', errReject);
+              }
+            });
+            conn.open();
+          }
+          catch (err) {
+            router.emit('error', err);
+            try {
+              reject(err);
+            }
+            catch (errReject) {
+              router.emit('error', errReject);
+            }
+          }
         }
         else {
-          reject(new Error('Router does not allow out-going connections.'));
+          try {
+            if (!id) {
+              reject(new Error('Could not generate a unique ID'));
+            }
+            else {
+              reject(new Error('Router does not allow out-going connections.'));
+            }
+          }
+          catch (errReject) {
+            router.emit('error', errReject);
+          }
         }
-      }
+      }, 0);
     });
     return promise;
   }
