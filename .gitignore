@@ -66,3 +66,6 @@ package-lock.json
 
 # next.js build output
 .next
+
+# Vim temporary files
+*.swp
