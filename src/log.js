@@ -8,6 +8,10 @@ const process = require('process');
 /* Custom */
 'use strict';
 
+function getDate() {
+  return new Date().toUTCString();
+}
+
 function getLine(errStack) {
   try {
     return errStack.stack.split('at ')[2].trim();
@@ -17,41 +21,52 @@ function getLine(errStack) {
   }
 }
 
-const trace = function(msg) {
-  if (!msg) {
-    msg = '';
-  }
-  console.log('TRACE', new Date().toUTCString(), getLine(new Error()), msg);
-};
+function normalize(args) {
+  let msg = '';
 
-const debug = function(msg) {
-  if (!msg) {
-    msg = '';
-  }
-  console.log('DEBUG', new Date().toUTCString(), getLine(new Error()), msg);
-};
+  for (let i = 0; i < args.length; ++i) {
+    if (i) {
+      msg += ' ';
+    }
 
-const info = function(msg) {
-  if (!msg) {
-    msg = '';
+    const arg = args[i];
+    if (!arg) {
+      msg += '';
+    }
+    else if (typeof arg === 'string') {
+      msg += arg;
+    }
+    else if ((arg.stack && arg.message) || (arg instanceof Error)) {
+      msg += getLine(arg) + ' -> ' + String(arg);
+    }
+    else {
+      msg += JSON.stringify(arg);
+    }
   }
-  console.log('INFO_', new Date().toUTCString(), getLine(new Error()), msg);
-};
 
-const warn = function(msg) {
-  if (!msg) {
-    msg = '';
-  }
-  console.log('WARN!', new Date().toUTCString(), getLine(new Error()), msg);
-};
+  return msg;
+}
 
-const crit = function(msg) {
-  if (!msg) {
-    msg = '';
-  }
-  console.log('CRIT!', new Date().toUTCString(), getLine(new Error()), msg);
+function trace() {
+  console.log('TRACE', getDate(), getLine(new Error()), normalize(arguments));
+}
+
+function debug() {
+  console.log('DEBUG', getDate(), getLine(new Error()), normalize(arguments));
+}
+
+function info() {
+  console.log('INFO_', getDate(), getLine(new Error()), normalize(arguments));
+}
+
+function warn() {
+  console.log('WARN!', getDate(), getLine(new Error()), normalize(arguments));
+}
+
+function crit() {
+  console.log('CRIT!', getDate(), getLine(new Error()), normalize(arguments));
   process.exit(1);
-};
+}
 
 module.exports = {
   trace,
