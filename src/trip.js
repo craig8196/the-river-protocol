@@ -5,12 +5,13 @@
 /* Core */
 const EventEmitter = require('events');
 /* Community */
+const { Enum } = require('enumify');
 /* Custom */
 const { mkKeyPair } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
 const { mkRouter } = require('./router.js');
 const { defaults } = require('./spec.js');
-const { trace, info, warn } = require('./log.js');
+const { trace } = require('./log.js');
 'use strict';
 
 
@@ -298,12 +299,35 @@ function mkClient(socket, options) {
   return new Client(mkRouter(socket, options));
 }
 
+class SettingPreset extends Enum {}
+SettingPreset.initEnum([
+  'WEB_CLIENT',
+  'WEB_SERVER',
+  'IOT_CLIENT',
+  'IOT_SERVER',
+  'GAME_CLIENT',
+  'GAME_SERVER',
+  'HIGH_VOLUME',
+  'LOW_VOLUME',
+]);
+
+/**
+ * @param {SettingPreset} presetType - Specify what you are doing.
+ */
+function mkSettings(/* TODO presetType */) {
+  const settings = {};
+  // TODO create and maintain settings that are available for different settups
+  return settings;
+}
+
 module.exports = {
   // Typical-use API
   mkKeyPair,
   mkSocket,
   mkServer,
   mkClient,
+  SettingPreset,
+  mkSettings,
   // Low-level API for Customization
   SocketInterface,
   SenderInterface,
