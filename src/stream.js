@@ -8,6 +8,8 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 // None yet.
+'use strict';
+
 
 class State extends Enum {}
 State.initEnum([
