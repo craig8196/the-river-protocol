@@ -7,7 +7,7 @@ const EventEmitter = require('events');
 /* Community */
 const { Enum } = require('enumify');
 /* Custom */
-const { mkKeyPair } = require('./crypto.js');
+const { mkKeyPair, mkNonce } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
 const { mkRouter } = require('./router.js');
 const { defaults } = require('./spec.js');
@@ -116,6 +116,7 @@ class Client extends EventEmitter {
     this._isListening = false;
     this._router = router;
     this._dest = null;
+    this._options = null;
     this._conn = null;
     this._isClosed = false;
     this._allowRegistration = true;
@@ -142,7 +143,7 @@ class Client extends EventEmitter {
 
       // Create the connection and emit 'open' when connected.
       client._isListening = true;
-      const promise = client._router.mkConnection(client._dest);
+      const promise = client._router.mkConnection(client._dest, client._options);
       promise
         .then((conn) => {
           trace();
@@ -217,12 +218,13 @@ class Client extends EventEmitter {
    * @param {string} address - IP or URL (or 'localhost' for testing).
    * @param {number} port - Port to attach to, default if not specified.
    */
-  open(dest) {
+  open(dest, options) {
     trace();
 
     this._allowRegistration = false;
 
     this._dest = dest;
+    this._options = options;
     if (!this._isListening) {
       this._router.start();
     }
@@ -276,6 +278,7 @@ class Client extends EventEmitter {
  * @param {SocketInterface} socket - The socket that allows reliable or unreliable communication.
  * @param {Object} options - See options for mkRouter.
  * @return {Client} The client object.
+ * TODO do we really need the options object for this?
  */
 function mkClient(socket, options) {
   trace();
@@ -323,6 +326,7 @@ function mkSettings(/* TODO presetType */) {
 module.exports = {
   // Typical-use API
   mkKeyPair,
+  mkNonce,
   mkSocket,
   mkServer,
   mkClient,
