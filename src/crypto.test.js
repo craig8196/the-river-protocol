@@ -2,7 +2,29 @@
  * @file Test the cryptography library for basic encryption/decryption.
  */
 const crypto = require('./crypto.js');
+'use strict';
 
+
+describe('hash', () => {
+  test('can hash and unhash', () => {
+    const r1 = crypto.mkNonce();
+    const r2 = crypto.mkNonce();
+    expect(r1.compare(r2) !== 0).toBeTruthy();
+
+    const hash1 = crypto.mkHash(r1);
+    expect(r1.compare(hash1) !== 0).toBeTruthy();
+
+    const hash2 = crypto.mkHash(r2);
+    expect(r2.compare(hash2) !== 0).toBeTruthy();
+
+    expect(hash1.compare(hash2) !== 0).toBeTruthy();
+
+    expect(!crypto.verifyHash(r1, hash2)).toBeTruthy();
+    expect(!crypto.verifyHash(r2, hash1)).toBeTruthy();
+    expect(crypto.verifyHash(r1, hash1)).toBeTruthy();
+    expect(crypto.verifyHash(r2, hash2)).toBeTruthy();
+  });
+});
 
 describe('crypto', () => {
   test('is id', () => {

@@ -137,6 +137,40 @@ function unseal(message, emessage, publicKey, secretKey) {
 const NO_NONCE = Buffer.allocUnsafeSlow(NONCE_BYTES).fill(0);
 const NO_KEY = Buffer.allocUnsafeSlow(PUBLIC_KEY_BYTES).fill(0);
 
+const HLEN = sodium.crypto_generichash_BYTES_MIN;
+const KLEN = sodium.crypto_generichash_KEYBYTES_MIN;
+const HASH_BYTES = HLEN + KLEN;
+
+/**
+ * Hash the data and store hash and anything necessary to validate in mac.
+ * @param {Buffer} message - What to hash.
+ * @return {Buffer} Message hash data needed to validate the message.
+ */
+function mkHash(message) {
+  const hash = Buffer.allocUnsafe(HASH_BYTES);
+  const h = hash.slice(0, HLEN);
+  const k = hash.slice(HLEN);
+  h.fill(0);
+  sodium.randombytes_buf(k);
+  sodium.crypto_generichash(h, message, k);
+  return hash;
+}
+
+/**
+ * Verify that hashing the message results in the same hash.
+ * @param {Buffer} message - Message to validate.
+ * @param {Buffer} hash - The hash to validate against. Must be HASH_BYTES long.
+ * @return {boolean} True on success; false otherwise.
+ */
+function verifyHash(message, hash) {
+  const test = Buffer.allocUnsafe(HLEN);
+  test.fill(0);
+  const h = hash.slice(0, HLEN);
+  const k = hash.slice(HLEN);
+  sodium.crypto_generichash(test, message, k);
+  return 0 === test.compare(h);
+}
+
 module.exports = {
   mkId,
   mkNonce,
@@ -151,5 +185,8 @@ module.exports = {
   SEAL_MAC_BYTES,
   NO_NONCE,
   NO_KEY,
+  HASH_BYTES,
+  mkHash,
+  verifyHash,
 };
 
