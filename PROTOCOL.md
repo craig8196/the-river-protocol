@@ -33,9 +33,18 @@ Note that the allowed length may be limited by packet size.
 Use variable integral type encoding which are little endian.
 See https://developers.google.com/protocol-buffers/docs/encoding
 
+
+## Transmission Profiles
+Transmission profiles are sets of default settings according to use-case.
+By specifying good defaults programmers are less prone to errors or
+choosing ineffective, sub-optimal settings.
+TODO specify different profiles here...
+
+
 ## Congestion Control
 Even with low levels of data transmission there should be congestion control.
 Different quantities of transmission may take different methods of control.
+TODO reference correct parts of rfc8085
 
 **Retransmission:**
 Packet loss retransmission interval should be 1 second for regular loads and 500ms for smaller loads.
@@ -70,6 +79,15 @@ Exponential backoff should be used when resending.
 The peer should still report statistics (sent/received) every ping so packet drop rate can be determined.
 
 
+## Sequence Numbers
+TODO TCP recommends random initial sequence number to avoid stail packets...
+TODO does this apply?
+TODO can an issue arise if a connection on the same ports is opened/closed in quick succession??
+TODO what is the MSL (Max Segment Lifetime)?
+TODO are segments unique to TCP?
+TODO I'm thinking that use of encryption may eliminate need for random sequence numbers...
+
+
 ## General Notes
 * "Encrypt" indicates that the following section is encrypted.
 * Use exponential backoff up to 5 minutes (or similar) when resending (after 3 tries).
@@ -100,9 +118,9 @@ The control value is added to the 5th octet of the nonce as part-of packet repla
 Control numbering starts at zero:
 Stream
 Reject
-Open
-Open Challenge
-Open Accept
+Connect Open
+Connect Challenge
+Connect Response
 Ping
 Renew
 Renew Confirm
@@ -152,7 +170,7 @@ Rejection types are:
 If the address+port are already in use then reject as potentially malicious,
 let a timeout cleanup the entry.
 Otherwise, create a temporary entry for the client.
-Floods of open connection requests should be met with increasing rejctions
+Floods of open connection requests should be met with increasing rejections
 and fewer accepted packets.
 If extreme cullings are taking place then errors will be emitted.
 The packet is sealed with the servers public key, this helps ensure that the
@@ -194,15 +212,17 @@ If the OPENING INFO has different keys on resubmissions then it is considered ma
 
 
 ### OPENING INFO
-| 1 | Allowed stream types, cannot be zero.
 | 4 | Receiver ID for future responses/requests
 | 8 | Timestamp
+| 24 | Nonce client (Zeroes if unencrypted)
+| 32 | Public key client (Zeroes if unencrypted)
 | 2 | Sender Max Currency
 | 2 | Sender Currency Rate
 | 2 | Sender Max Streams
 | 4 | Sender Max Message
-| 24 | Nonce client (Zeroes if unencrypted)
-| 32 | Public key client (Zeroes if unencrypted)
+
+TODO should this be a part of it???
+| 1 | Allowed stream types, cannot be zero.
 
 
 ### Response
