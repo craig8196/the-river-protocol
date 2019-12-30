@@ -2,9 +2,27 @@
 /**
  * @file Test the parsing routines.
  */
-const { serializeVarInt, parseVarInt } = require('./parse.js');
+const p = require('./protocol.js');
+const { lenVarInt, serializeVarInt, parseVarInt } = p;
+'use strict';
 
-describe('parse', () => {
+
+describe('lenVarInt', () => {
+  test('is 0 len 1', () => {
+    let n = 0;
+    expect(lenVarInt(n)).toEqual(1);
+  });
+  test('is 1 len 1', () => {
+    let n = 1;
+    expect(lenVarInt(n)).toEqual(1);
+  });
+  test('is 0x80 len 2', () => {
+    let n = 0x80;
+    expect(lenVarInt(n)).toEqual(2);
+  });
+});
+
+describe('serialize+parseVarInt', () => {
   test('is 0 serializable', () => {
     let n = 0;
     let buflen = 1;
