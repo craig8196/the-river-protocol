@@ -2,14 +2,15 @@
  * @file Example usage of TRIP.
  */
 const trip = require('./src/trip.js');
-const { info, crit } = require('./src/util.js');
+const { info, crit } = require('./src/log.js');
 const { defaults } = require('./src/spec.js');
 
+const openKeys = trip.mkKeyPair();
 
 // Create server object.
 // Server is started at end of script.
 // Default port is 42443 when null is passed.
-const server = trip.mkServer(null, { allowUnsafeOpen: true });
+const server = trip.mkServer(null, { openKeys });
 
 // Start server. Binds to underlying interface.
 server.on('start', () => {
@@ -23,7 +24,7 @@ server.on('listen', () => {
   // Create client. In theory a client could be opened on the server's
   // Router object, but we don't do that yet.
   // Choose any open port by passing null.
-  const client = trip.mkClient(null);
+  const client = trip.mkClient();
 
   // Connect call at bottom of this block.
 
@@ -55,7 +56,7 @@ server.on('listen', () => {
 
   // An error occurred, shut everything down.
   client.on('error', (err) => {
-    crit('Client error: ' + String(err));
+    crit('Client error: ', err);
     server.stop();
     client.close();
   });
@@ -67,7 +68,9 @@ server.on('listen', () => {
   });
 
   // Now we tell to connect.
-  client.open({ address: 'localhost', port: defaults.PORT });
+  const destination = { address: 'localhost', port: defaults.PORT };
+  const options = { openKey: openKeys.publicKey };
+  client.open(destination, options);
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
@@ -84,7 +87,7 @@ server.on('accept', (client) => {
 
   // New incoming stream.
   client.on('stream', (stream) => {
-    info('Stream type: ' + String(stream.type));
+    info('Stream type: ', String(stream.type));
 
     // Setup echo stream behavior.
     stream.on('data', (data) => {
@@ -102,7 +105,7 @@ server.on('accept', (client) => {
 
   // Log any errors the client causes.
   client.on('error', (err) => {
-    crit('Incoming client had an error: ' + String(err));
+    crit('Incoming client had an error: ', err);
   });
 });
 
@@ -114,7 +117,7 @@ server.on('stop', () => {
 // Server has an error.
 // We should check if the error is critical or not...
 server.on('error', (err) => {
-  crit('Server error: ' + String(err));
+  crit('Server error: ', err);
 });
 
 server.start();
