@@ -89,6 +89,9 @@ TODO items are added in the moment of coding when an issue is thought of.
 * [x] Go back to state machine setup (much easier to navigate and reason about).
 * [x] Should I just use ranges and a bitmap for window validation and packet replay protection?? Yes.
 * [ ] 
+* [ ] Review for better info: https://github.com/facebookincubator/katran
+* [ ] Review: https://blog.cloudflare.com/the-road-to-quic/
+* [ ] Make sure that the bit counting is done according to size of currency?? or even currency/2... or off of currency, transmission rates, and RTT...
 * [ ] Update the connect challenge to forward repsonse to another server.
 * [ ] If sequence gets out of range, or too high, the connection should be reset.
 * [ ] Ensure that all event emissions are documented and consitant.
@@ -263,6 +266,7 @@ MMS: Maximum Message Size
 MTU: Maximum Transmission Unit
 NAT: Network Address Translation
 RTT: Round Trip Time
+SCTP: Stream Control Transmission Protocol
 TCP: Transmission Control Protocol
 UDP: User Datagram Protocol
 UMMS: User MMS
@@ -295,7 +299,32 @@ However, `Buffer.allocUnsafeSlow` should be used for longer lived values.
 While speed isn't the goal using a languages library correctly is still important.
 
 
-## C Implementation Dependencies
+## C Implementation Notes
+Outline expectations of the C implementation.
+
+
+### Interface
+The River Interface must be implemented in a generic way.
+To/from destinations can be specified using UTF8 strings.
+This allows the library to choose the correct internal details accordingly.
+Added need on the programmer to pass along parseable strings.
+
+
+### ABI
+The compiled shared object should be forward and backward compatible
+taking version and implementation changes into account.
+Struct sizes and details should not be made available to the users;
+using handles (pointers) to reference needed resources.
+Library methods will allocate the needed resources.
+For embedded libraries an additional header can be made available that
+makes common structs globally available for handling one connection at a time.
+
+
+### Space
+Will use of libsodium and chosen data-structures be embedded device friendly?
+
+
+### Dependencies
 * libc
 * OS provided UDP socket interface
 * libcares: For DNS resolution, optional for direct IP and custom builds.
@@ -303,14 +332,14 @@ While speed isn't the goal using a languages library correctly is still importan
 
 
 ## References | Sources
-1. https://tools.ietf.org/html/rfc768
-1. https://tools.ietf.org/html/rfc8085
-1. https://tools.ietf.org/html/rfc793
-1. https://tools.ietf.org/html/rfc4960
-1. https://tools.ietf.org/html/rfc1122
+1. UDP RFC: https://tools.ietf.org/html/rfc768
+1. UDP Usage Guidelines RFC: https://tools.ietf.org/html/rfc8085
+1. TCP RFC: https://tools.ietf.org/html/rfc793
+1. SCTP RFC: https://tools.ietf.org/html/rfc4960
+1. Requirements for Internet Hosts: https://tools.ietf.org/html/rfc1122
 1. https://nodejs.org/api/dgram.html
 1. https://gafferongames.com/post/why_cant_i_send_udp_packets_from_a_browser/
 1. https://github.com/nodejs/node-v0.x-archive/issues/1623
-1. https://www.privateinternetaccess.com/blog/wp-content/uploads/2017/08/libsodium.pdf
+1. Libsodium Security Assessment: https://www.privateinternetaccess.com/blog/wp-content/uploads/2017/08/libsodium.pdf
 
 
