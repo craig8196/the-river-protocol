@@ -3,6 +3,8 @@
  * @author Craig Jacobson
  *
  * TODO use allocUnsafeSlow for longer lived values
+ * TODO move spec specific things to spec file
+ * TODO rename spec.js to protocol.js???
  */
 /* Core */
 const EventEmitter = require('events');
@@ -10,68 +12,146 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 const Long = require('long');
 /* Custom */
-const { version, lengths, control, reject } = require('./spec.js');
 const crypto = require('./crypto.js');
-const { trace } = require('./log.js');
+const { trace, debug, warn } = require('./log.js');
+const { lenVarInt, serializeVarInt } = require('./parse.js');
+const { SenderInterface } = require('./socket.js');
+const { version, length, limit, control, reject } = require('./spec.js');
+const p = require('./protocol.js');
 'use strict';
 
+
+function lenPrefix() {
+  trace();
+
+  const l = length;
+
+  return l.PREFIX;
+}
 
 /**
  * Encode prefix.
  */
-function mkPrefix(buf, encrypted, c, id, sequence) {
+function addPrefix(buf, encrypted, c, id, sequence) {
+  trace();
+  debug(arguments);
+
+  const l = length;
+
   let offset = 0;
   if (encrypted) {
-    console.log('Encrypted!!!');
     buf[0] = c | control.ENCRYPTED;
   }
   else {
     buf[0] = c;
   }
+  offset += l.CONTROL;
 
-  offset += lengths.CONTROL;
   buf.writeUInt32BE(id, offset);
-  offset += lengths.ID;
+  offset += l.ID;
   buf.writeUInt32BE(sequence, offset);
-  offset += lengths.ID;
+  offset += l.SEQUENCE;
 
   return offset;
+}
+
+function lenOpen(routingLen) {
+  trace();
+
+  const l = length;
+
+  // TODO calculation routing length of varint
+  const unencrypted = l.VERSION + lenVarInt(routingLen) + routingLen;
+
+  const encrypted =
+    l.SEAL_PADDING +
+    l.HASH +
+    l.ID + l.TIMESTAMP + l.NONCE + l.PUBLIC_KEY +
+    l.CURRENCY + l.RATE + l.STREAMS + l.MESSAGE;
+
+  return unencrypted + encrypted;
 }
 
 /**
  * Encode unencrypted open information.
  */
-function mkOpen(buf, id, timestamp, version, currency, streams, messages, nonce, publicKey) {
-  console.log(buf.length);
-  console.log(lengths.OPEN_DATA);
-  if (buf.length < lengths.OPEN_DATA) {
-    return 0;
+function mkOpen(openKey, ver, routing, id, timestamp, selfNonce, selfKey, currency, rate, streams, messages) {
+  trace();
+
+  const l = length;
+
+  const routingLen = routing ? routing.length : 0;
+
+  const bufLen = lenPrefix() + lenOpen(routingLen);
+  const buf = Buffer.allocUnsafe(bufLen);
+  let len = 0;
+
+  /* Write unencrypted portion of data to the buffer. */
+
+  let preLen = addPrefix(buf, !!openKey, control.OPEN, 0, 0);
+  if (!preLen) {
+    return null;
+  }
+  
+  len += preLen;
+
+  buf.writeUInt16BE(ver, len);
+  len += l.VERSION;
+
+  if (routing && routing.length) {
+    const rOctets = serializeVarInt(routing.length, buf, len, 4);
+    if (!rOctets) {
+      return 0;
+    }
+    len += rOctets;
+    routing.copy(buf, len, 0, routing.length);
+    len += routing.length;
+  }
+  else {
+    buf[len] = 0;
+    len += 1;
   }
 
-  let offset = 0;
-  buf.writeUInt32BE(id, offset);
-  offset += lengths.ID;
-  console.log(offset);
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
-  console.log(offset);
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
-  console.log(offset);
-  buf.writeUInt16BE(version, offset);
-  offset += lengths.VERSION;
-  buf.writeUInt32BE(currency, offset);
-  offset += lengths.CURRENCY;
-  buf.writeUInt32BE(streams, offset);
-  offset += lengths.STREAMS;
-  buf.writeUInt32BE(messages, offset);
-  offset += lengths.MESSAGE;
-  nonce.copy(buf, offset, 0, lengths.NONCE);
-  offset += lengths.NONCE;
-  publicKey.copy(buf, offset, 0, lengths.PUBLIC_KEY);
-  offset += lengths.PUBLIC_KEY;
+  /* Unencrypted data has been written. Write encrypted to tmp. */
+  const tmp = Buffer.allocUnsafe(bufLen);
+  let tlen = 0;
 
-  return offset;
+  /* Hash unencrypted data to help ensure it wasn't tampered with. */
+  const hash = crypto.mkHash(buf.slice(len));
+  hash.copy(tmp, 0, 0, l.HASH);
+  tlen += l.HASH;
+
+  tmp.writeUInt32BE(id, tlen);
+  tlen += l.ID;
+  tmp.writeUInt32BE(timestamp.getHighBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+
+  selfNonce.copy(tmp, tlen, 0, length.NONCE);
+  tlen += l.NONCE;
+  selfKey.copy(tmp, tlen, 0, length.PUBLIC_KEY);
+  tlen += l.PUBLIC_KEY;
+
+  tmp.writeUInt32BE(currency, tlen);
+  tlen += l.CURRENCY;
+  tmp.writeUInt32BE(rate, tlen);
+  tlen += l.RATE;
+  tmp.writeUInt32BE(streams, tlen);
+  tlen += l.STREAMS;
+  tmp.writeUInt32BE(messages, tlen);
+  tlen += l.MESSAGE;
+
+  if (openKey) {
+    if (!crypto.seal(buf.slice(len), tmp.slice(0, tlen), openKey)) {
+      return null;
+    }
+  }
+  else {
+    tmp.copy(buf, len, 0, tlen);
+  }
+
+  return buf;
 }
 
 /**
@@ -79,28 +159,28 @@ function mkOpen(buf, id, timestamp, version, currency, streams, messages, nonce,
  * @return {boolean} True if successful, false otherwise.
  */
 function unOpen(out, buf) {
-  if (buf.length !== lengths.OPEN_DATA) {
+  if (buf.length !== length.OPEN_DATA) {
     return false;
   }
 
   let offset = 0;
   out.id = buf.readUInt32BE(offset);
-  offset += lengths.ID;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
-  offset += lengths.TIMESTAMP;
+  offset += length.ID;
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
+  offset += length.TIMESTAMP;
   out.version = buf.readUInt16BE(offset);
-  offset += lengths.VERSION;
+  offset += length.VERSION;
   out.currency = buf.readUInt32BE(offset);
-  offset += lengths.CURRENCY;
+  offset += length.CURRENCY;
   out.streams = buf.readUInt32BE(offset);
-  offset += lengths.STREAMS;
+  offset += length.STREAMS;
   out.messages = buf.readUInt32BE(offset);
-  offset += lengths.MESSAGE;
-  out.nonce = Buffer.allocUnsafeSlow(lengths.NONCE);
-  buf.copy(out.nonce, 0, offset, offset + lengths.NONCE);
-  offset += lengths.NONCE;
-  out.publicKey = Buffer.allocUnsafeSlow(lengths.PUBLIC_KEY);
-  buf.copy(out.publicKey, 0, offset, offset + lengths.PUBLIC_KEY);
+  offset += length.MESSAGE;
+  out.nonce = Buffer.allocUnsafeSlow(length.NONCE);
+  buf.copy(out.nonce, 0, offset, offset + length.NONCE);
+  offset += length.NONCE;
+  out.publicKey = Buffer.allocUnsafeSlow(length.PUBLIC_KEY);
+  buf.copy(out.publicKey, 0, offset, offset + length.PUBLIC_KEY);
 
   return true;
 }
@@ -109,17 +189,17 @@ function unOpen(out, buf) {
  * @return {number} Zero on failure; length written otherwise.
  */
 function mkReject(buf, timestamp, rejectCode, rejectMessage) {
-  if (buf.length < lengths.REJECT_DATA) {
+  if (buf.length < length.REJECT_DATA) {
     return 0;
   }
 
   let offset = 0;
   buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
+  offset += length.TIMESTAMP/2;
   buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
+  offset += length.TIMESTAMP/2;
   buf.writeUInt16BE(rejectCode, offset);
-  offset += lengths.REJECT_CODE;
+  offset += length.REJECT_CODE;
 
   if (rejectMessage) {
     Buffer.from(rejectMessage, 'utf8').copy(buf, offset, 0);
@@ -137,19 +217,19 @@ function mkReject(buf, timestamp, rejectCode, rejectMessage) {
  * @return {boolean} True on success; false otherwise.
  */
 function unReject(out, buf) {
-  if (buf.length < lengths.REJECT_DATA) {
+  if (buf.length < length.REJECT_DATA) {
     return 0;
   }
 
   let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(0, lengths.TIMESTAMP));
-  offset += lengths.TIMESTAMP;
+  out.timestamp = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
+  offset += length.TIMESTAMP;
 
   out.code = buf.readUInt16BE(offset);
   if (out.code < reject.UNKNOWN || out.code > reject.ERROR) {
     return false;
   }
-  offset += lengths.REJECT_CODE;
+  offset += length.REJECT_CODE;
 
   if (buf[buf.length - 1] !== 0) {
     return false;
@@ -168,63 +248,63 @@ const mkChallenge = mkOpen;
 const unChallenge = unOpen;
 
 function mkAccept(buf, timestamp, nonce) {
-  if (buf.length !== lengths.ACCEPT_DATA) {
+  if (buf.length !== length.ACCEPT_DATA) {
     return 0;
   }
 
   let offset = 0;
   buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
+  offset += length.TIMESTAMP/2;
   buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
-  nonce.copy(buf, offset, 0, lengths.NONCE);
-  offset += lengths.NONCE;
+  offset += length.TIMESTAMP/2;
+  nonce.copy(buf, offset, 0, length.NONCE);
+  offset += length.NONCE;
 
   return offset;
 }
 
 function unAccept(out, buf) {
-  if (buf.length !== lengths.ACCEPT_DATA) {
+  if (buf.length !== length.ACCEPT_DATA) {
     return false;
   }
 
   let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
-  offset += lengths.TIMESTAMP;
-  out.nonce = buf.slice(offset, offset + lengths.NONCE);
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
+  offset += length.TIMESTAMP;
+  out.nonce = buf.slice(offset, offset + length.NONCE);
 
   return true;
 }
 
 function mkPing(buf, timestamp, rtt, nonce) {
-  if (buf.length !== lengths.PING_DATA) {
+  if (buf.length !== length.PING_DATA) {
     return 0;
   }
 
   let offset = 0;
   buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
+  offset += length.TIMESTAMP/2;
   buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += lengths.TIMESTAMP/2;
+  offset += length.TIMESTAMP/2;
   buf.writeUInt32BE(rtt, offset);
-  offset += lengths.RTT;
-  nonce.copy(buf, offset, 0, lengths.NONCE);
-  offset += lengths.NONCE;
+  offset += length.RTT;
+  nonce.copy(buf, offset, 0, length.NONCE);
+  offset += length.NONCE;
 
   return offset;
 }
 
 function unPing(out, buf) {
-  if (buf.length !== lengths.PING_DATA) {
+  if (buf.length !== length.PING_DATA) {
     return false;
   }
 
   let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + lengths.TIMESTAMP));
-  offset += lengths.TIMESTAMP;
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
+  offset += length.TIMESTAMP;
   out.rtt = buf.readUInt32BE(offset);
-  offset += lengths.RTT;
-  out.nonce = buf.slice(offset, offset + lengths.NONCE);
+  offset += length.RTT;
+  out.nonce = buf.slice(offset, offset + length.NONCE);
 
   return true;
 }
@@ -234,6 +314,7 @@ Event.initEnum([
   'OPEN',
   'OPEN_RECV',
   'OPEN_TIMEOUT',
+  'OPEN_ERROR',
   'CHALLENGE',
   'CHALLENGE_RECV',
   'CHALLENGE_TIMEOUT',
@@ -294,6 +375,7 @@ State.initEnum({
     },
 
     exit() {
+      this._stopOpenAlgorithm();
     },
   },
 
@@ -431,16 +513,23 @@ State.initEnum({
 // TODO add hasStream method to determine if an ID is taken
 // TODO add getStreamId for random, or next, stream ID
 class Connection extends EventEmitter {
+
+  /**
+   * Construct Connection object from valid socket and options.
+   * @private
+   * @param {SenderInterface} sender - Required. For communication.
+   * @param {object} options - Required. See mkConnection for details.
+   */
   constructor(id, sender, options) {
     super();
 
     trace();
 
+    // TODO move all settings to mkConnection
+
     this._id = id;
     this._sender = sender;
     this._streams = new Map();
-    this._openKey = options.keys;
-    this._allowUnsafePacket = options.allowUnsafePacket;
 
     /*
     // TODO verify how these need to be organized
@@ -449,40 +538,49 @@ class Connection extends EventEmitter {
     this.buffers = [];
     this.bufferKeep = 0;
 
-    this.minmtu = lengths.UDP_MTU_DATA_MIN;
-    this.effmtu = lengths.UDP_MTU_DATA_REC;
-    this.maxmtu = lengths.UDP_MTU_DATA_MAX;
+    this.minmtu = length.UDP_MTU_DATA_MIN;
+    this.effmtu = length.UDP_MTU_DATA_REC;
+    this.maxmtu = length.UDP_MTU_DATA_MAX;
 
-    this.sequence = 0;
-    this.sequenceWindow = lengths.WINDOW;
+    this.sequenceWindow = length.WINDOW;
 
     this.rttMs = timeouts.RTT;
     this.rttTotal = timeouts.RTT;
     this.rttCount = 1;
 
-    this._maxCurrency = limits.CURRENCY;
-    this._maxStreams = limits.STREAMS;
-    this._maxMessages = limits.MESSAGES;
-
-    this._curCurrency = limits.CURRENCY;
-    this._curStreams = limits.STREAMS;
-    this._curMessages = limits.MESSAGES;
-
     this._peerMinSeq = -1;
     this._peerMidSeq = -1;
     this._peerMaxSeq = -1;
     */
+
+    this._allowUnsafePacket = options.allowUnsafePacket;
+    this._openKey = options.openKey;
     this._peerKey = null;
-    this._selfKeys = null;
+    this._selfKeys = options.keys;
     this._peerNonce = null;
-    this._selfNonce = null;
+    this._selfNonce = options.nonce;
+
+    // TODO make sure these are checked on making
+    this._maxCurrency = limit.CURRENCY;
+    this._regenCurrency = limit.CURRENCY_REGEN;
+    this._maxStreams = limit.STREAMS;
+    this._maxMessage = limit.MESSAGE;
+
+    this._curCurrency = this._maxCurrency;
+    this._curStreams = this._maxStreams;
+
+    this.sequence = 0;
+
+    this._timestamp = util.mkTimeNow();
+
+    // TODO determine better default timeout?
+    this._openMaxTimeout = 60000; /* 1 minute */
 
     this._internalState = State.START;
     this._internalState.enter();
 
     // TODO
     //this._flagPeerSequence(0);
-    console.log('sequences: ' + JSON.stringify(this.peer));
   }
 
   /**
@@ -519,6 +617,84 @@ class Connection extends EventEmitter {
   }
 
   /**
+   * Start the open connection handshake.
+   */
+  _startOpenAlgorithm() {
+    trace();
+
+    const maxTime = this._openMaxTimeout;
+
+    function _openCycle(conn, counter, timeout, totalTime) {
+      trace();
+
+      totalTime += timeout;
+      if (totalTime > maxTime) {
+        conn.emit('error', new Error('Open message timed out.'));
+        conn._transition(Event.OPEN_TIMEOUT);
+        return;
+      }
+
+      counter++;
+
+      if (counter === 3) {
+        counter = 0;
+        timeout *= 2;
+      }
+
+      if (conn._sendOpen()) {
+        conn._timeoutOpenHandle =
+          setTimeout(_openCycle, timeout, conn, counter, timeout, totalTime);
+      }
+      else {
+        conn.emit('error', new Error('Unable to create/send open message'));
+        conn._transition(Event.OPEN_ERROR);
+      }
+    }
+
+    _openCycle(this, 0, (this.rttMs > 200 ? 200 : this.rttMs), 0);
+  }
+
+  /**
+   * Stop the open connection.
+   */
+  _stopOpenAlgorithm() {
+    trace();
+
+    if (this._timeoutOpenHandle) {
+      clearTimeout(this._timeoutOpenHandle);
+    }
+  }
+
+  /**
+   * Create and send the open packet.
+   */
+  _sendOpen() {
+    trace();
+
+    const buf = mkOpen(
+      this._openKey,
+      version,
+      null,
+      this._id,
+      this._timestamp,
+      this._selfNonce,
+      this._selfKeys.publicKey,
+      this._maxCurrency,
+      this._regenCurrency,
+      this._maxStreams,
+      this._maxMessage,
+    );
+
+    if (!buf) {
+      return false;
+    }
+
+    this._sender.send(buf);
+
+    return true;
+  }
+
+  /**
    * Add the sender.
    */
   setSender(sender) {
@@ -548,10 +724,10 @@ class Connection extends EventEmitter {
    */
   get umtu() {
     if (this.encrypted) {
-      return this.effmtu - lengths.PREFIX - lengths.BOX_PADDING - lengths.STREAM_DATA;
+      return this.effmtu - length.PREFIX - length.BOX_PADDING - length.STREAM_DATA;
     }
     else {
-      return this.effmtu - lengths.PREFIX - lengths.STREAM_DATA;
+      return this.effmtu - length.PREFIX - length.STREAM_DATA;
     }
   }
 
@@ -560,7 +736,7 @@ class Connection extends EventEmitter {
    * @return {number} The user MMU.
    */
   get ummu() {
-    return this.umtu * lengths.MAX_FRAGMENT;
+    return this.umtu * length.MAX_FRAGMENT;
   }
 
   get sequence() {
@@ -572,8 +748,6 @@ class Connection extends EventEmitter {
   }
   
   validatePeerSequence(seq) {
-    console.log(seq);
-    console.log(JSON.stringify(this.peer));
     if (seq < this.peer.minSequence || seq > this.peer.maxSequence) {
       return false;
     }
@@ -604,8 +778,6 @@ class Connection extends EventEmitter {
   firewall(buf, seq, c, encrypted) {
     const sequence = seq.readUInt32BE(0);
 
-    console.log('seq: ' + String(sequence));
-
     if (!this.validatePeerSequence(sequence)) {
       return null;
     }
@@ -620,10 +792,10 @@ class Connection extends EventEmitter {
             // Create specific nonce for this packet.
             const nonce = this.getNonceScratch();
             nonce[0] = (nonce[0] + data.control) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 1] = (nonce[lengths.NONCE - 1] + seq[0]) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 2] = (nonce[lengths.NONCE - 2] + seq[1]) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 3] = (nonce[lengths.NONCE - 3] + seq[2]) & control.BYTE_MASK;
-            nonce[lengths.NONCE - 4] = (nonce[lengths.NONCE - 4] + seq[3]) & control.BYTE_MASK;
+            nonce[length.NONCE - 1] = (nonce[length.NONCE - 1] + seq[0]) & control.BYTE_MASK;
+            nonce[length.NONCE - 2] = (nonce[length.NONCE - 2] + seq[1]) & control.BYTE_MASK;
+            nonce[length.NONCE - 3] = (nonce[length.NONCE - 3] + seq[2]) & control.BYTE_MASK;
+            nonce[length.NONCE - 4] = (nonce[length.NONCE - 4] + seq[3]) & control.BYTE_MASK;
 
             // Unbox message.
             if (crypto.unbox(decryptBuf, buf, nonce, this.keys.publicKey, this.keys.secretKey)) {
@@ -633,14 +805,14 @@ class Connection extends EventEmitter {
             }
 
             // Set return buffer.
-            const len = buf.length - lengths.BOX_PADDING;
+            const len = buf.length - length.BOX_PADDING;
             buf = decrypteBuf.slice(0, len);
           }
           break;
           */
         case control.OPEN:
           {
-            const decryptBuf = Buffer.allocUnsafe(lengths.OPEN_DATA);
+            const decryptBuf = Buffer.allocUnsafe(length.OPEN_DATA);
             const pk = this.router.keys.publicKey;
             const sk = this.router.keys.secretKey;
 
@@ -657,7 +829,7 @@ class Connection extends EventEmitter {
         case control.REJECT:
         //case control.CHALLENGE:
           {
-            const decryptBuf = Buffer.allocUnsafe(buf.length - lengths.SEAL_PADDING);
+            const decryptBuf = Buffer.allocUnsafe(buf.length - length.SEAL_PADDING);
             const pk = this.keys.publicKey;
             const sk = this.keys.secretKey;
 
@@ -687,8 +859,6 @@ class Connection extends EventEmitter {
       case State.CHALLENGE:
         {
           const out = {};
-          console.log(buf.length);
-          console.log(lengths.OPEN_DATA);
           if (unOpen(out, buf)) {
             if (!out.id) {
               this.emit('error', new Error('Invalid peer id'));
@@ -750,8 +920,6 @@ class Connection extends EventEmitter {
   handleRejectPacket(buf) {
     /* Any state */
     const out = {};
-    console.log(buf.length);
-    console.log(lengths.OPEN_DATA);
     if (unReject(out, buf)) {
       // TODO check timestamp
 
@@ -769,8 +937,6 @@ class Connection extends EventEmitter {
       case State.OPEN:
         {
           const out = {};
-          console.log(buf.length);
-          console.log(lengths.OPEN_DATA);
           if (unChallenge(out, buf)) {
             if (!out.id) {
               this.emit('error', new Error('Invalid peer id'));
@@ -835,7 +1001,6 @@ class Connection extends EventEmitter {
       case State.CHALLENGE:
         {
           const out = {};
-          console.log(buf.length);
           if (unAccept(out, buf)) {
             if (!this.nonce.equals(out.nonce)) {
               this.emit('error', new Error('Invalid nonce'));
@@ -887,53 +1052,8 @@ class Connection extends EventEmitter {
     }
   }
 
-  sendOpen(cb) {
-    const bufAllocLen = lengths.PREFIX
-                        + (this.peer.publicKeyOpen ? lengths.SEAL_PADDING : 0)
-                        + lengths.OPEN_DATA;
-    const buf = Buffer.allocUnsafe(bufAllocLen);
-
-    let len = mkPrefix(buf, !!this.peer.publicKeyOpen, control.OPEN, 0, this.sequence);
-
-    if (!len) {
-      return false;
-    }
-
-    let bufTmp = null;
-    if (this.peer.publicKeyOpen) {
-      bufTmp = Buffer.allocUnsafe(lengths.OPEN_DATA);
-    }
-    else {
-      bufTmp = buf.slice(lengths.PREFIX);
-    }
-
-    let n = crypto.NO_NONCE;
-    let pk = crypto.NO_KEY;
-    if (this.encrypted) {
-      n = this.nonce;
-      pk = this.keys.publicKey;
-    }
-
-    len = mkChallenge(bufTmp, this.id, this.timestamp, version,
-      this.limits.currency, this.limits.streams,
-      this.limits.messages, n, pk);
-
-    if (!len) {
-      return false;
-    }
-
-    if (this.peer.publicKeyOpen) {
-      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKeyOpen)) {
-        return false;
-      }
-    }
-
-    this.sender.send(buf, cb);
-    return true;
-  }
-
   sendReject(rejectCode, message, cb) {
-    let bufAllocLen = this.peer.publicKey ? lengths.REJECT_ENCRYPT : lengths.REJECT_DECRYPT;
+    let bufAllocLen = this.peer.publicKey ? length.REJECT_ENCRYPT : length.REJECT_DECRYPT;
 
     const difference = this.effmtu - bufAllocLen;
 
@@ -964,10 +1084,10 @@ class Connection extends EventEmitter {
 
     let bufTmp = null;
     if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(lengths.REJECT_DATA + messageByteLen);
+      bufTmp = Buffer.allocUnsafe(length.REJECT_DATA + messageByteLen);
     }
     else {
-      bufTmp = buf.slice(lengths.PREFIX);
+      bufTmp = buf.slice(length.PREFIX);
     }
 
     len = mkReject(bufTmp, this.timestamp, rejectCode, message);
@@ -977,8 +1097,7 @@ class Connection extends EventEmitter {
     }
 
     if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
-        console.log('here3');
+      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
         return false;
       }
     }
@@ -988,7 +1107,7 @@ class Connection extends EventEmitter {
   }
 
   sendChallenge(cb) {
-    const bufAllocLen = this.peer.publicKey ? lengths.CHALLENGE_DECRYPT : lengths.CHALLENGE_ENCRYPT;
+    const bufAllocLen = this.peer.publicKey ? length.CHALLENGE_DECRYPT : length.CHALLENGE_ENCRYPT;
     const buf = Buffer.allocUnsafe(bufAllocLen);
 
     let len = mkPrefix(buf, !!this.peer.publicKey, control.CHALLENGE, 0, this.sequence);
@@ -999,10 +1118,10 @@ class Connection extends EventEmitter {
 
     let bufTmp = null;
     if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(lengths.CHALLENGE_DATA);
+      bufTmp = Buffer.allocUnsafe(length.CHALLENGE_DATA);
     }
     else {
-      bufTmp = buf.slice(lengths.PREFIX);
+      bufTmp = buf.slice(length.PREFIX);
     }
 
     let n = crypto.NO_NONCE;
@@ -1021,7 +1140,7 @@ class Connection extends EventEmitter {
     }
 
     if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
+      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
         return false;
       }
     }
@@ -1031,7 +1150,7 @@ class Connection extends EventEmitter {
   }
 
   sendAccept(cb) {
-    const bufAllocLen = this.peer.publicKey ? lengths.ACCEPT_DECRYPT : lengths.ACCEPT_ENCRYPT;
+    const bufAllocLen = this.peer.publicKey ? length.ACCEPT_DECRYPT : length.ACCEPT_ENCRYPT;
     const buf = Buffer.allocUnsafe(bufAllocLen);
 
     let len = mkPrefix(buf, !!this.peer.publicKey, control.ACCEPT, 0, this.sequence);
@@ -1042,10 +1161,10 @@ class Connection extends EventEmitter {
 
     let bufTmp = null;
     if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(lengths.ACCEPT_DATA);
+      bufTmp = Buffer.allocUnsafe(length.ACCEPT_DATA);
     }
     else {
-      bufTmp = buf.slice(lengths.PREFIX);
+      bufTmp = buf.slice(length.PREFIX);
     }
 
     len = mkAccept(bufTmp, this.timestamp, this.peer.nonce);
@@ -1055,7 +1174,7 @@ class Connection extends EventEmitter {
     }
 
     if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
+      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
         return false;
       }
     }
@@ -1065,7 +1184,7 @@ class Connection extends EventEmitter {
   }
 
   sendPing(cb) {
-    const bufAllocLen = this.peer.publicKey ? lengths.PING_DECRYPT : lengths.PING_ENCRYPT;
+    const bufAllocLen = this.peer.publicKey ? length.PING_DECRYPT : length.PING_ENCRYPT;
     const buf = Buffer.allocUnsafe(bufAllocLen);
 
     let len = mkPrefix(buf, !!this.peer.publicKey, control.PING, 0, this.sequence);
@@ -1076,14 +1195,14 @@ class Connection extends EventEmitter {
 
     let bufTmp = null;
     if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(lengths.PING_DATA);
+      bufTmp = Buffer.allocUnsafe(length.PING_DATA);
     }
     else {
-      bufTmp = buf.slice(lengths.PREFIX);
+      bufTmp = buf.slice(length.PREFIX);
     }
 
     if (!this.pingNonce) {
-      this.pingNonce = crypto.mkNonce(Buffer.allocUnsafe(lengths.NONCE));
+      this.pingNonce = crypto.mkNonce(Buffer.allocUnsafe(length.NONCE));
     }
 
     len = mkPing(bufTmp, this.timestamp, this.rttMs, this.pingNonce);
@@ -1093,7 +1212,7 @@ class Connection extends EventEmitter {
     }
 
     if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(lengths.PREFIX), bufTmp, this.peer.publicKey)) {
+      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
         return false;
       }
     }
@@ -1114,46 +1233,6 @@ class Connection extends EventEmitter {
    */
   packet() {
     // TODO
-  }
-
-  /**
-   * Start the open connection handshake.
-   */
-  _startOpen() {
-    function openCycle(conn, counter, timeout) {
-      if (conn.state === State.OPEN) {
-        counter++;
-
-        if (counter === 3) {
-          counter = 0;
-          timeout *= 2;
-        }
-
-        if (conn.sendOpen()) {
-          conn.timeoutOpenHandle = setTimeout(openCycle, timeout, conn, counter, timeout);
-        }
-        else {
-          const err = new Error('Unable to create/send open message');
-          conn.emit('error', err);
-          clearTimeout(conn.timeoutOpenHandle);
-          conn.close();
-        }
-      }
-      else {
-        clearTimeout(conn.timeoutOpenHandle);
-      }
-    }
-
-    openCycle(this, 0, (this.rttMs > 200 ? 200 : this.rttMs));
-  }
-
-  /**
-   * Clear any timeouts or variables from startOpen.
-   */
-  clearOpen() {
-    if (this.timeoutOpenHandle) {
-      clearTimeout(this.timeoutOpenHandle);
-    }
   }
 
   reject() {
@@ -1253,9 +1332,44 @@ class Connection extends EventEmitter {
   }
 }
 
-
+/**
+ * Create a Connection.
+ * @param {number} id - Required. Positive ID value.
+ * @param {SenderInterface} sender - Required. Valid socket sender type.
+ * @param {object} [options] - Options object.
+ * @param {Buffer} [options.openKey] - Valid binary key.
+ * @param {boolean} [options.allowUnsafePacket=false] - Allow unencrypted traffic.
+ * @param {object} keys - Valid keys from crypto.
+ * @param {Buffer} nonce - Valid nonce from crypto.
+ * @return {Connection}
+ */
 function mkConnection(id, sender, options) {
-  // TODO vet options and set smart defaults
+  if (!id) {
+    throw new Error('Invalid ID.');
+  }
+
+  if (!(sender instanceof SenderInterface)) {
+    throw new Error('Invalid sender type.');
+  }
+
+  if (!options) {
+    options = {};
+  }
+
+  options.openKey =
+    'openKey' in options ? options.openKey : null;
+  options.allowUnsafePacket =
+    'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
+
+  if (!options.allowUnsafePacket) {
+    options.keys = crypto.mkKeyPair();
+    options.nonce = crypto.mkNonce();
+  }
+  else {
+    options.keys = null;
+    options.nonce = null;
+  }
+
   return new Connection(id, sender, options);
 }
 
