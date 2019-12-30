@@ -9,10 +9,11 @@ const { Enum } = require('enumify');
 /* Custom */
 const { mkConnection } = require('./connection.js');
 const crypto = require('./crypto.js');
+const { debug, trace } = require('./log.js');
 const p = require('./parse.js');
 const { SocketInterface } = require('./socket.js');
 const { control, length, offset, reject, version } = require('./spec.js');
-const { debug, trace } = require('./log.js');
+'use strict';
 
 
 /*
@@ -273,6 +274,8 @@ class Router extends EventEmitter {
   /**
    * Construct Router object from valid socket and options.
    * @private
+   * @param {SocketInterface} socket - Required. For communication.
+   * @param {object} options - Required. See mkRouter for details.
    */
   constructor(socket, options) {
     super();
@@ -282,8 +285,9 @@ class Router extends EventEmitter {
     this._socket = socket;
     this._map = new Map();
     this._addresses = new Map();
+    this._reported = new Map();
 
-    this._openKeys = options.keys;
+    this._openKeys = options.openKeys;
     this._maxConnections = options.maxConnections;
     this._allowIncoming = options.allowIncoming;
     this._allowOutgoing = options.allowOutgoing;
@@ -669,11 +673,11 @@ class Router extends EventEmitter {
    * @private
    */
   _report(sourceKey) {
-    if (this._delinq[sourceKey]) {
-      this._delinq[sourceKey] = this._delinq + 1;
+    if (this._reported[sourceKey]) {
+      this._reported[sourceKey] = this._reported + 1;
     }
     else {
-      this._delinq[sourceKey] = 1;
+      this._reported[sourceKey] = 1;
     }
   }
 
@@ -682,7 +686,7 @@ class Router extends EventEmitter {
    * @private
    */
   _isReported(sourceKey) {
-    const val = this._delinq[sourceKey];
+    const val = this._reported[sourceKey];
     if (val && val > 1) {
       return true;
     }
@@ -903,7 +907,8 @@ class Router extends EventEmitter {
         const id = router._newId();
         if (id && router._allowOutgoing) {
           debug('Connection.id = ' + String(id));
-          debug('Connection.dest = ' + String(dest));
+          debug('Connection.dest = ' + JSON.stringify(dest));
+
           try {
             const sender = router._socket.mkSender(dest);
             const conn = mkConnection(id, sender, options);
@@ -955,7 +960,7 @@ class Router extends EventEmitter {
  * Create a Router.
  * @param {SocketInterface} socket - Valid socket type.
  * @param {object} [options] - Options object.
- * @param {object} [options.keys] - Valid key pair from crypto.
+ * @param {object} [options.openKeys] - Valid key pair from crypto.
  * @param {number} [options.maxConnections=1024] - The max connections, minimum of 1.
  * @param {boolean} [options.allowIncoming=false] - Allow incoming connections.
  * @param {boolean} [options.allowOutgoing=false] - Allow outgoing connections.
@@ -990,8 +995,8 @@ function mkRouter(socket, options) {
   options.allowUnsafePacket =
     'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
 
-  if (!options.keys) {
-    options.keys = crypto.mkKeyPair();
+  if (!options.openKeys && !options.allowUnsafeOpen) {
+    options.openKeys = crypto.mkKeyPair();
   }
 
   return new Router(socket, options);
