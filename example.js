@@ -3,7 +3,7 @@
  */
 const trip = require('./src/trip.js');
 const { info, crit } = require('./src/log.js');
-const { defaults } = require('./src/spec.js');
+const { defaults } = require('./src/protocol.js');
 
 const openKeys = trip.mkKeyPair();
 
@@ -68,9 +68,13 @@ server.on('listen', () => {
   });
 
   // Now we tell to connect.
+  // TODO we shouldn't have to specify the default port...
   const destination = { address: 'localhost', port: defaults.PORT };
   const options = { openKey: openKeys.publicKey };
   client.open(destination, options);
+  // TODO should this be formatted as:
+  // client.open(mkConnection(dest, options));
+  // ???
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
