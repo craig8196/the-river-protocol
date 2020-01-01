@@ -6,6 +6,7 @@
 /* Community */
 const Long = require('long');
 /* Custom */
+const { trace, debug, warn } = require('./log.js');
 const crypto = require('./crypto.js');
 'use strict';
 
@@ -31,6 +32,7 @@ const timeout = {
   /* Round-trip Time */
   RTT:              500, /* 0.5 seconds */
 };
+Object.freeze(timeout);
 
 /**
  * Lengths of certain fields in octets.
@@ -80,14 +82,16 @@ length.UDP_MTU_DATA_MAX = length.UDP_MTU_MAX - length.IP_HEADER - length.UDP_HEA
 /* Required prefix of every packet. */
 length.PREFIX = length.CONTROL + length.ID + length.SEQUENCE;
 /* OPEN packet length. */
-length.OPEN_DATA = length.ID + length.TIMESTAMP + length.VERSION
-                    + length.NONCE + length.PUBLIC_KEY;
-length.OPEN_DECRYPT = length.PREFIX + length.OPEN_DATA;
-length.OPEN_ENCRYPT = length.OPEN_DECRYPT + length.SEAL_PADDING;
+length.OPEN_DATA =
+  length.HASH +
+  length.ID + length.TIMESTAMP +
+  length.NONCE + length.PUBLIC_KEY +
+  length.CURRENCY + length.RATE + length.STREAMS + length.MESSAGE;
 /* REJECT packet length. */
 length.REJECT_DATA = length.TIMESTAMP + length.REJECT_CODE + 1;
 length.REJECT_DECRYPT = length.PREFIX + length.REJECT_DATA;
 length.REJECT_ENCRYPT = length.REJECT_DECRYPT + length.SEAL_PADDING;
+Object.freeze(length);
 
 /**
  * Offsets for values.
@@ -100,6 +104,7 @@ offset.ID = length.CONTROL;
 offset.SEQUENCE = offset.ID + length.ID;
 offset.VERSION = offset.ID + length.ID;
 offset.ROUTE_LENGTH = offset.VERSION + length.VERSION;
+Object.freeze(offset);
 
 /**
  * Default limit.
@@ -111,13 +116,14 @@ const limit = {
   CURRENCY_REGEN: 256,
   MESSAGE: 65535,
 };
+Object.freeze(limit);
 
 /**
  * Control values to identify different messages.
  * @namespace
  */
 const control = {
-  MASK:      0x7F,
+  MASK:      0x07F,
   ENCRYPTED: 0x080,
   BYTE_MASK: 0x0FF,
 
@@ -128,6 +134,7 @@ const control = {
   ACCEPT:    0x04,
   PING:      0x05,
 };
+Object.freeze(control);
 
 /**
  * Reject codes.
@@ -143,6 +150,7 @@ const reject = {
   USER:      0x06,
   ERROR:     0x07,
 };
+Object.freeze(reject);
 
 /**
  * Default values.
@@ -153,6 +161,7 @@ const defaults = {
   PORT_ANY: 42442, /* Encrypted connection without encrypted OPEN. */
   PORT_MEH: 42080, /* Unencrypted connection. Meh. */
 };
+Object.freeze(defaults);
 
 /**
  * Create the current time.
@@ -216,19 +225,332 @@ function parseVarInt(msg, off, maxOctets) {
   } while ((octet & 0x80) && maxOctets);
 
   if (octet & 0x80) {
-    return { len: -1, octets };
+    return { len: -1, octets: 0 };
   }
 
   return { len, octets };
 }
 
-Object.freeze(timeout);
-Object.freeze(length);
-Object.freeze(offset);
-Object.freeze(limit);
-Object.freeze(control);
-Object.freeze(reject);
-Object.freeze(defaults);
+/**
+ * Calculate the length of the prefix.
+ */
+function lenPrefix() {
+  trace();
+
+  const l = length;
+
+  return l.PREFIX;
+}
+
+/**
+ * Encode prefix.
+ */
+function addPrefix(buf, encrypted, c, id, sequence) {
+  trace();
+  debug(arguments);
+
+  const l = length;
+
+  let offset = 0;
+  if (encrypted) {
+    buf[0] = c | control.ENCRYPTED;
+  }
+  else {
+    buf[0] = c;
+  }
+  offset += l.CONTROL;
+
+  buf.writeUInt32BE(id, offset);
+  offset += l.ID;
+  buf.writeUInt32BE(sequence, offset);
+  offset += l.SEQUENCE;
+
+  return offset;
+}
+
+function unPrefix(buf) {
+  const o = offset;
+
+  const pre = {};
+  pre.encrypted = !!(buf[o.CONTROL] & 0x80);
+  pre.control = buf[o.CONTROL] & 0x7F;
+  pre.id = buf.readUInt32BE(o.ID);
+  pre.seq = buf.readUInt32BE(o.SEQUENCE);
+
+  return pre;
+}
+
+function lenOpen(routingLen) {
+  trace();
+
+  const l = length;
+
+  const unencrypted = l.VERSION + lenVarInt(routingLen) + routingLen;
+  const encrypted = l.SEAL_PADDING + l.OPEN_DATA;
+
+  return lenPrefix() + unencrypted + encrypted;
+}
+
+/**
+ * Encode unencrypted open information.
+ */
+function mkOpen(openKey, ver, routing, id, timestamp, selfNonce, selfKey, currency, rate, streams, messages) {
+  trace();
+
+  const l = length;
+
+  const routingLen = routing ? routing.length : 0;
+
+  const bufLen = lenOpen(routingLen);
+  const buf = Buffer.allocUnsafe(bufLen);
+  let len = 0;
+
+  /* Write unencrypted portion of data to the buffer. */
+
+  let preLen = addPrefix(buf, !!openKey, control.OPEN, 0, 0);
+  if (!preLen) {
+    return null;
+  }
+  
+  len += preLen;
+
+  buf.writeUInt16BE(ver, len);
+  len += l.VERSION;
+
+  if (routing && routing.length) {
+    const rOctets = serializeVarInt(routing.length, buf, len, 4);
+    if (!rOctets) {
+      return 0;
+    }
+    len += rOctets;
+    routing.copy(buf, len, 0, routing.length);
+    len += routing.length;
+  }
+  else {
+    buf[len] = 0;
+    len += 1;
+  }
+
+  /* Unencrypted data has been written. Write encrypted to tmp. */
+  const tmp = Buffer.allocUnsafe(l.OPEN_DATA);
+  let tlen = 0;
+
+  /* Hash unencrypted data to help ensure it wasn't tampered with. */
+  const hash = crypto.mkHash(buf.slice(0, len));
+  hash.copy(tmp, 0, 0, l.HASH);
+  tlen += l.HASH;
+
+  tmp.writeUInt32BE(id, tlen);
+  tlen += l.ID;
+  tmp.writeUInt32BE(timestamp.getHighBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+
+  selfNonce.copy(tmp, tlen, 0, length.NONCE);
+  tlen += l.NONCE;
+  selfKey.copy(tmp, tlen, 0, length.PUBLIC_KEY);
+  tlen += l.PUBLIC_KEY;
+
+  tmp.writeUInt32BE(currency, tlen);
+  tlen += l.CURRENCY;
+  tmp.writeUInt32BE(rate, tlen);
+  tlen += l.RATE;
+  tmp.writeUInt32BE(streams, tlen);
+  tlen += l.STREAMS;
+  tmp.writeUInt32BE(messages, tlen);
+  tlen += l.MESSAGE;
+
+  if (openKey) {
+    if (!crypto.seal(buf.slice(len), tmp.slice(0, tlen), openKey)) {
+      return null;
+    }
+  }
+  else {
+    tmp.copy(buf, len, 0, tlen);
+  }
+
+  return buf;
+}
+
+function unOpen(buf, publicKey, secretKey) {
+  const l = length;
+
+  let len = l.PREFIX;
+  const open = {};
+  open.version = buf.readUInt16BE(len);
+  len += l.VERSION;
+  const { len: routeLen, octets } = parseVarInt(buf, len, 4);
+  len += octets;
+
+  if ((len + routeLen) > buf.length) {
+    return null;
+  }
+
+  open.route = buf.slice(len, routeLen);
+  len += routeLen;
+
+  if ((l.OPEN_DATA + l.SEAL_PADDING) !== (buf.length - len)) {
+    return null;
+  }
+
+  const m = Buffer.allocUnsafe(l.OPEN_DATA);
+
+  if (!crypto.unseal(m, buf.slice(len), publicKey, secretKey)) {
+    return null;
+  }
+
+  const hash = m.slice(0, l.HASH);
+  if (!crypto.verifyHash(buf.slice(0, len), hash)) {
+    warn('Bad hash!');
+    return null;
+  }
+
+  let off = l.HASH;
+  open.id = m.readUInt32BE(off);
+  off += l.ID;
+  // TODO open.time =;
+  off += l.TIMESTAMP;
+  // TODO
+  off += l.NONCE;
+  // TODO
+  off += l.PUBLIC_KEY;
+  open.currency = m.readUInt32BE(off);
+  off += l.CURRENCY;
+  open.rate = m.readUInt32BE(off);
+  off += l.RATE;
+  open.maxStreams = m.readUInt32BE(off);
+  off += l.STREAMS;
+  open.maxMessage = m.readUInt32BE(off);
+  off += l.MESSAGE;
+
+  return open;
+}
+
+/**
+ * @return {number} Zero on failure; length written otherwise.
+ */
+function mkReject(buf, timestamp, rejectCode, rejectMessage) {
+  if (buf.length < length.REJECT_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt16BE(rejectCode, offset);
+  offset += length.REJECT_CODE;
+
+  if (rejectMessage) {
+    Buffer.from(rejectMessage, 'utf8').copy(buf, offset, 0);
+    offset += Buffer.byteLength(rejectMessage, 'utf8');
+  }
+
+  buf[offset] = 0;
+
+  ++offset;
+
+  return offset;
+}
+
+/**
+ * @return {boolean} True on success; false otherwise.
+ */
+function unReject(out, buf) {
+  if (buf.length < length.REJECT_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  out.timestamp = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
+  offset += length.TIMESTAMP;
+
+  out.code = buf.readUInt16BE(offset);
+  if (out.code < reject.UNKNOWN || out.code > reject.ERROR) {
+    return false;
+  }
+  offset += length.REJECT_CODE;
+
+  if (buf[buf.length - 1] !== 0) {
+    return false;
+  }
+
+  let message = '';
+  if ((buf.length - 1) > offset) {
+    message = buf.toString('utf8', offset, buf.length);
+  }
+  out.message = message;
+  return true;
+}
+
+const mkChallenge = mkOpen;
+
+const unChallenge = unOpen;
+
+function mkAccept(buf, timestamp, nonce) {
+  if (buf.length !== length.ACCEPT_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  nonce.copy(buf, offset, 0, length.NONCE);
+  offset += length.NONCE;
+
+  return offset;
+}
+
+function unAccept(out, buf) {
+  if (buf.length !== length.ACCEPT_DATA) {
+    return false;
+  }
+
+  let offset = 0;
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
+  offset += length.TIMESTAMP;
+  out.nonce = buf.slice(offset, offset + length.NONCE);
+
+  return true;
+}
+
+function mkPing(buf, timestamp, rtt, nonce) {
+  if (buf.length !== length.PING_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt32BE(rtt, offset);
+  offset += length.RTT;
+  nonce.copy(buf, offset, 0, length.NONCE);
+  offset += length.NONCE;
+
+  return offset;
+}
+
+function unPing(out, buf) {
+  if (buf.length !== length.PING_DATA) {
+    return false;
+  }
+
+  let offset = 0;
+  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
+  offset += length.TIMESTAMP;
+  out.rtt = buf.readUInt32BE(offset);
+  offset += length.RTT;
+  out.nonce = buf.slice(offset, offset + length.NONCE);
+
+  return true;
+}
+
 module.exports = {
   version,
   timeout,
@@ -242,5 +564,11 @@ module.exports = {
   lenVarInt,
   serializeVarInt,
   parseVarInt,
+  lenPrefix,
+  lenOpen,
+  addPrefix,
+  unPrefix,
+  mkOpen,
+  unOpen,
 };
 
