@@ -10,7 +10,7 @@ const { Enum } = require('enumify');
 const { mkKeyPair, mkNonce } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
 const { mkRouter } = require('./router.js');
-const { defaults } = require('./spec.js');
+const { defaults } = require('./protocol.js');
 const { trace } = require('./log.js');
 'use strict';
 

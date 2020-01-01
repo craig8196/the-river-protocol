@@ -8,7 +8,7 @@ const dgram = require('dgram');
 const isIp = require('is-ip');
 const isValidPath = require('is-valid-path');
 /* Custom */
-const { lengths } = require('./spec.js');
+const { lengths } = require('./protocol.js');
 'use strict';
 
 
