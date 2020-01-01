@@ -79,7 +79,17 @@ Exponential backoff should be used when resending.
 The peer should still report statistics (sent/received) every ping so packet drop rate can be determined.
 
 
+## User ID
+The ID field in an OPEN request is discarded.
+However, it could be used to map to a specific login key.
+
+
 ## Sequence Numbers
+The sequence numbers may start at any value before to 2^30.
+However, whatever is chosen by the connecting party must be used for a time
+before resetting.
+Resetting the sequence numbers also resets nonce and keys to prevent
+obscure attacks with packet replay.
 TODO TCP recommends random initial sequence number to avoid stail packets...
 TODO does this apply?
 TODO can an issue arise if a connection on the same ports is opened/closed in quick succession??
@@ -439,11 +449,12 @@ Note that default limits are set to be reasonable values for modern clients/serv
 ## Attack Mitigation
 Here we outline attack vectors and how they are overcome or mitigated.
 TODO - add additional details and analysis.
+TODO - additional research on other attacks, including attacks on encryption.
 
 ### DDoS
 No known server-side solution.
 ISP, Firewall, and intermediate network devices may have ways of mitigating.
-Incoming traffic can be increasingly dropped and only established connections can be handled.
+Incoming traffic can be increasingly dropped and only previously established connections can be handled.
 
 ### DDoS Amplification
 **Problem:**
@@ -452,6 +463,8 @@ Creating IP packets with the return IP address and port set to the network to DD
 No known perfect solution.
 **TRiP:**
 Fixed by first having known public key that is kept secret for OPEN connection.
+Nature of encryption-by-default should help mitigate.
+Size of OPEN packet is as large as CHALLENGE, so amplification isn't a large issue.
 Additionally we can suppress reject messages for malformed OPEN messages.
 No perfect fix for public servers with unencryped OPEN or known public key.
 Mitigated by limiting OPEN packets.
@@ -459,21 +472,25 @@ Temporarily tracking "sender" can reduce reject messages or OPEN accepts.
 
 ### Packet Replay
 Sequences, nonce, control, timestamps.
-The use of AEAD constructions in OPEN messages and use of the sequence
-in combination with the nonce for decription.
+Only OPEN messages can be replayed and with no damage or success.
 
 ### Man-in-the-Middle
 No known perfect solution.
 Fixed by using public key known in advance for OPEN connection.
-Note that routing information may be tampered with.
 
 ### Man-in-the-Middle Through Packet Injection
 While this is tricky and unlikely due to timing there are ways of mitigating.
 Fixed by using public key known in advance for OPEN connection.
 Mitigated by timing.
+Routing, version tampering is fixed by encrypting a hash of them.
+Tampering with the sequence, control, or ID just results in bad message
+for encrypted connections.
+Unencrypted connections are prone to issues with tampering currently.
 
 ### Packet Injection
 Disrupting services through IP/UDP packet fabrication.
-Established connections
+Servers drop malformed packets.
+Rejects are rate limited.
+Established connections using encryption are not prone to any know issues.
 
 
