@@ -19,8 +19,8 @@ Event-based design for better application reactivity.
 Real-time capabilities (disabled by default for better network performance).
 Framework verbosity to provide information to applications for better
 performance (e.g. User MTU for guaranteed single packet delivery).
-Future-proof, an programming interface and protocol that can be used over
-other mediums.
+Future-proof, a programming interface and protocol that can be used over
+other mediums and a protocol that can scale up or down with the network.
 
 
 ## Why use TRiP?
@@ -89,6 +89,8 @@ TODO items are added in the moment of coding when an issue is thought of.
 * [x] Go back to state machine setup (much easier to navigate and reason about).
 * [x] Should I just use ranges and a bitmap for window validation and packet replay protection?? Yes.
 * [ ] 
+* [ ] What is a TCP segement exactly??? Initial part of spec is ambiguous.
+* [ ] Discuss mismatch between protocol future proofing (varints) and implementation requirement (4 or 8 octet uints? doubles?)
 * [ ] Review for better info: https://github.com/facebookincubator/katran
 * [ ] Review: https://blog.cloudflare.com/the-road-to-quic/
 * [ ] Make sure that the bit counting is done according to size of currency?? or even currency/2... or off of currency, transmission rates, and RTT...
@@ -106,15 +108,18 @@ TODO items are added in the moment of coding when an issue is thought of.
 - [ ] Test code.
 - [ ] Finalize specs.
 - [ ] Re-work code to be in C.
+- [ ] Add comment/notes about benefit of using one file descriptor for many connections.
 
 
 ## Protocol Features
 The following is detailed information on the protocol's features.
 
+
 ### Versioning in Protocol
 Versioning in the protocol itself is necessary to update and enhance cryptography.
 With quantum computers threatening to break current standards the protocol
 must be forward thinking -- just-in-case.
+
 
 ### Abstract Connection Oriented Design
 The recommended architecture is client-server to reduce complexity.
@@ -191,6 +196,7 @@ Note that servers may impose additional restrictions, these are just the default
 
 ## Protocol Design Choices and Notes
 Discussion of why some choices were made.
+
 
 ### Multi Interface Bindings
 Disallowed since not all operating systems allow you to determine the interface
@@ -290,6 +296,8 @@ Community:
 * enumify: For creating enums used in state-machines.
 * long: For timestamps and uint64 type values.
 * sodium-native: For security. Seems to have the best interface and support.
+* is-ip: For determining if a string is ipv4 or ipv6.
+* is-valid-path: For determining if a string is local to the machine.
 
 
 ### Buffers
