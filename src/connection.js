@@ -10,304 +10,14 @@
 const EventEmitter = require('events');
 /* Community */
 const { Enum } = require('enumify');
-const Long = require('long');
 /* Custom */
 const crypto = require('./crypto.js');
-const { trace, debug, warn } = require('./log.js');
-const { lenVarInt, serializeVarInt } = require('./parse.js');
-const { SenderInterface } = require('./socket.js');
-const { version, length, limit, control, reject } = require('./spec.js');
+const { trace } = require('./log.js');
 const p = require('./protocol.js');
+const { SenderInterface } = require('./socket.js');
+const { version, length, limit, control, reject } = p;
 'use strict';
 
-
-function lenPrefix() {
-  trace();
-
-  const l = length;
-
-  return l.PREFIX;
-}
-
-/**
- * Encode prefix.
- */
-function addPrefix(buf, encrypted, c, id, sequence) {
-  trace();
-  debug(arguments);
-
-  const l = length;
-
-  let offset = 0;
-  if (encrypted) {
-    buf[0] = c | control.ENCRYPTED;
-  }
-  else {
-    buf[0] = c;
-  }
-  offset += l.CONTROL;
-
-  buf.writeUInt32BE(id, offset);
-  offset += l.ID;
-  buf.writeUInt32BE(sequence, offset);
-  offset += l.SEQUENCE;
-
-  return offset;
-}
-
-function lenOpen(routingLen) {
-  trace();
-
-  const l = length;
-
-  // TODO calculation routing length of varint
-  const unencrypted = l.VERSION + lenVarInt(routingLen) + routingLen;
-
-  const encrypted =
-    l.SEAL_PADDING +
-    l.HASH +
-    l.ID + l.TIMESTAMP + l.NONCE + l.PUBLIC_KEY +
-    l.CURRENCY + l.RATE + l.STREAMS + l.MESSAGE;
-
-  return unencrypted + encrypted;
-}
-
-/**
- * Encode unencrypted open information.
- */
-function mkOpen(openKey, ver, routing, id, timestamp, selfNonce, selfKey, currency, rate, streams, messages) {
-  trace();
-
-  const l = length;
-
-  const routingLen = routing ? routing.length : 0;
-
-  const bufLen = lenPrefix() + lenOpen(routingLen);
-  const buf = Buffer.allocUnsafe(bufLen);
-  let len = 0;
-
-  /* Write unencrypted portion of data to the buffer. */
-
-  let preLen = addPrefix(buf, !!openKey, control.OPEN, 0, 0);
-  if (!preLen) {
-    return null;
-  }
-  
-  len += preLen;
-
-  buf.writeUInt16BE(ver, len);
-  len += l.VERSION;
-
-  if (routing && routing.length) {
-    const rOctets = serializeVarInt(routing.length, buf, len, 4);
-    if (!rOctets) {
-      return 0;
-    }
-    len += rOctets;
-    routing.copy(buf, len, 0, routing.length);
-    len += routing.length;
-  }
-  else {
-    buf[len] = 0;
-    len += 1;
-  }
-
-  /* Unencrypted data has been written. Write encrypted to tmp. */
-  const tmp = Buffer.allocUnsafe(bufLen);
-  let tlen = 0;
-
-  /* Hash unencrypted data to help ensure it wasn't tampered with. */
-  const hash = crypto.mkHash(buf.slice(len));
-  hash.copy(tmp, 0, 0, l.HASH);
-  tlen += l.HASH;
-
-  tmp.writeUInt32BE(id, tlen);
-  tlen += l.ID;
-  tmp.writeUInt32BE(timestamp.getHighBitsUnsigned(), tlen);
-  tlen += l.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), tlen);
-  tlen += l.TIMESTAMP/2;
-
-  selfNonce.copy(tmp, tlen, 0, length.NONCE);
-  tlen += l.NONCE;
-  selfKey.copy(tmp, tlen, 0, length.PUBLIC_KEY);
-  tlen += l.PUBLIC_KEY;
-
-  tmp.writeUInt32BE(currency, tlen);
-  tlen += l.CURRENCY;
-  tmp.writeUInt32BE(rate, tlen);
-  tlen += l.RATE;
-  tmp.writeUInt32BE(streams, tlen);
-  tlen += l.STREAMS;
-  tmp.writeUInt32BE(messages, tlen);
-  tlen += l.MESSAGE;
-
-  if (openKey) {
-    if (!crypto.seal(buf.slice(len), tmp.slice(0, tlen), openKey)) {
-      return null;
-    }
-  }
-  else {
-    tmp.copy(buf, len, 0, tlen);
-  }
-
-  return buf;
-}
-
-/**
- * Decode open information.
- * @return {boolean} True if successful, false otherwise.
- */
-function unOpen(out, buf) {
-  if (buf.length !== length.OPEN_DATA) {
-    return false;
-  }
-
-  let offset = 0;
-  out.id = buf.readUInt32BE(offset);
-  offset += length.ID;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
-  offset += length.TIMESTAMP;
-  out.version = buf.readUInt16BE(offset);
-  offset += length.VERSION;
-  out.currency = buf.readUInt32BE(offset);
-  offset += length.CURRENCY;
-  out.streams = buf.readUInt32BE(offset);
-  offset += length.STREAMS;
-  out.messages = buf.readUInt32BE(offset);
-  offset += length.MESSAGE;
-  out.nonce = Buffer.allocUnsafeSlow(length.NONCE);
-  buf.copy(out.nonce, 0, offset, offset + length.NONCE);
-  offset += length.NONCE;
-  out.publicKey = Buffer.allocUnsafeSlow(length.PUBLIC_KEY);
-  buf.copy(out.publicKey, 0, offset, offset + length.PUBLIC_KEY);
-
-  return true;
-}
-
-/**
- * @return {number} Zero on failure; length written otherwise.
- */
-function mkReject(buf, timestamp, rejectCode, rejectMessage) {
-  if (buf.length < length.REJECT_DATA) {
-    return 0;
-  }
-
-  let offset = 0;
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt16BE(rejectCode, offset);
-  offset += length.REJECT_CODE;
-
-  if (rejectMessage) {
-    Buffer.from(rejectMessage, 'utf8').copy(buf, offset, 0);
-    offset += Buffer.byteLength(rejectMessage, 'utf8');
-  }
-
-  buf[offset] = 0;
-
-  ++offset;
-
-  return offset;
-}
-
-/**
- * @return {boolean} True on success; false otherwise.
- */
-function unReject(out, buf) {
-  if (buf.length < length.REJECT_DATA) {
-    return 0;
-  }
-
-  let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
-  offset += length.TIMESTAMP;
-
-  out.code = buf.readUInt16BE(offset);
-  if (out.code < reject.UNKNOWN || out.code > reject.ERROR) {
-    return false;
-  }
-  offset += length.REJECT_CODE;
-
-  if (buf[buf.length - 1] !== 0) {
-    return false;
-  }
-
-  let message = '';
-  if ((buf.length - 1) > offset) {
-    message = buf.toString('utf8', offset, buf.length);
-  }
-  out.message = message;
-  return true;
-}
-
-const mkChallenge = mkOpen;
-
-const unChallenge = unOpen;
-
-function mkAccept(buf, timestamp, nonce) {
-  if (buf.length !== length.ACCEPT_DATA) {
-    return 0;
-  }
-
-  let offset = 0;
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  nonce.copy(buf, offset, 0, length.NONCE);
-  offset += length.NONCE;
-
-  return offset;
-}
-
-function unAccept(out, buf) {
-  if (buf.length !== length.ACCEPT_DATA) {
-    return false;
-  }
-
-  let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
-  offset += length.TIMESTAMP;
-  out.nonce = buf.slice(offset, offset + length.NONCE);
-
-  return true;
-}
-
-function mkPing(buf, timestamp, rtt, nonce) {
-  if (buf.length !== length.PING_DATA) {
-    return 0;
-  }
-
-  let offset = 0;
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(rtt, offset);
-  offset += length.RTT;
-  nonce.copy(buf, offset, 0, length.NONCE);
-  offset += length.NONCE;
-
-  return offset;
-}
-
-function unPing(out, buf) {
-  if (buf.length !== length.PING_DATA) {
-    return false;
-  }
-
-  let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
-  offset += length.TIMESTAMP;
-  out.rtt = buf.readUInt32BE(offset);
-  offset += length.RTT;
-  out.nonce = buf.slice(offset, offset + length.NONCE);
-
-  return true;
-}
 
 class Event extends Enum {}
 Event.initEnum([
@@ -571,7 +281,7 @@ class Connection extends EventEmitter {
 
     this.sequence = 0;
 
-    this._timestamp = util.mkTimeNow();
+    this._timestamp = p.mkTimeNow();
 
     // TODO determine better default timeout?
     this._openMaxTimeout = 60000; /* 1 minute */
@@ -671,7 +381,7 @@ class Connection extends EventEmitter {
   _sendOpen() {
     trace();
 
-    const buf = mkOpen(
+    const buf = p.mkOpen(
       this._openKey,
       version,
       null,
@@ -695,7 +405,7 @@ class Connection extends EventEmitter {
   }
 
   /**
-   * Add the sender.
+   * Update the sender. Useful if you are using DDNS.
    */
   setSender(sender) {
     this._sender = sender;
@@ -852,6 +562,8 @@ class Connection extends EventEmitter {
 
     return buf;
   }
+
+  // TODO handleOpen... data decrypted prior since keys are at router level
 
   handleOpenPacket(buf, allowUnsafePacket) {
     switch (this.state) {
