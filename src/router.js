@@ -9,10 +9,10 @@ const { Enum } = require('enumify');
 /* Custom */
 const { mkConnection } = require('./connection.js');
 const crypto = require('./crypto.js');
-const { debug, trace } = require('./log.js');
-const p = require('./parse.js');
+const { debug, trace, crit } = require('./log.js');
+const p = require('./protocol.js');
 const { SocketInterface } = require('./socket.js');
-const { control, length, offset, reject, version } = require('./spec.js');
+const { control, length, offset, reject, version } = p;
 'use strict';
 
 
@@ -113,7 +113,6 @@ State.initEnum({
       switch (e) {
         case Event.SOCKET_MESSAGE:
           this._processMessage(eData.message, eData.rinfo);
-          this.emit('error', new Error('SOCKET_MESSAGE received before SOCKET_CLOSE.'));
           return State.LISTEN;
         case Event.SOCKET_CLOSE:
           this.emit('error', new Error('SOCKET_CLOSE received before STOP.'));
@@ -145,13 +144,12 @@ State.initEnum({
         case Event.SOCKET_MESSAGE:
           /* Expected path. */
           this._processMessage(eData.message, eData.rinfo);
-          this.emit('error', new Error('SOCKET_MESSAGE received before SOCKET_CLOSE.'));
           return State.STOP_NOTIFY;
         case Event.SOCKET_CLOSE:
           /* Expected path. */
           return State.END;
         case Event.STOP:
-          /* I guess the user really want to stop now. */
+          /* I guess the user really wants to stop now. */
           return State.CLOSE;
         case Event.STOP_TIMEOUT:
           /* Remaining connections get hard drop. */
@@ -507,36 +505,46 @@ class Router extends EventEmitter {
   /**
    * Process the message and return information.
    * @private
+   * TODO rename _processPacket unless convention for this protocol is changed
+   * TODO TCP uses segment... maybe _processSegment?? then name buffer 'seg'?
+   * TODO naming must match PROTOCOL.md specifications
    */
   _processMessage(msg, rinfo) {
     trace();
 
-    debug(msg.toString('hex'));
-    debug(String(rinfo));
+    debug('rinfo:', String(rinfo));
     const sourceKey = this._socket.mkKey(rinfo);
 
     if (this._isReported(sourceKey)) {
-      this.emit('error', new Error('Packet source was previously reported: ' + String(rinfo)));
+      /* We just drop the packet. This is not an error to report. */
+      //this.emit('error', new Error('Packet source was previously reported: ' + String(rinfo)));
       return;
     }
 
     // First, check the length
     const len = msg.length;
     if (len < length.PACKET_MIN) {
-      this._report(rinfo);
-      this.emit('error', new Error('Invalid packet length: ' + String(len)));
+      /* We cannot accurately determine the source. Drop packet. */
+      //this._report(rinfo);
+      //this.emit('error', new Error('Invalid packet length: ' + String(len)));
       return;
     }
 
-    const id = msg.readUInt32BE(offset.ID);
+    /* Unpack prefix. */
+    const pre = p.unPrefix(msg);
+
+    debug('Prefix:', pre);
+
+    // TODO update control numbers and the following line
+    if (pre.control > control.PING) {
+      /* We cannot accurately determine the source. Drop packet. */
+      return;
+    }
 
     // Second, check that the control character and specific length are correct
-    const c = msg[0] & control.MASK;
-    debug('Control: ' + c);
-    const encrypted = !!(c & control.ENCRYPTED);
     let isValid = false;
     // TODO create isSafe variable to give better reject codes
-    switch (c & control.MASK) {
+    switch (pre.control) {
       case control.STREAM:
         if ((encrypted && len >= length.STREAM_ENCRYPT)
             || (!encrypted && len >= length.STREAM_DECRYPT)
@@ -547,14 +555,16 @@ class Router extends EventEmitter {
         }
         break;
       case control.OPEN:
-        debug('e: ' + length.SEAL_PADDING);
-        debug('d: ' + length.OPEN_DECRYPT);
+        /*
         if (((encrypted && len === length.OPEN_ENCRYPT)
             || (!encrypted && len === length.OPEN_DECRYPT))
-            && !id
+        */
+        if (true
+            && !pre.id
             && this._allowIncoming
-            && (encrypted || this._allowUnsafeOpen))
+            && (pre.encrypted || this._allowUnsafeOpen))
         {
+          debug('Hurray. Valid.');
           isValid = true;
         }
         break;
@@ -591,65 +601,61 @@ class Router extends EventEmitter {
     }
 
     if (!isValid) {
-      this._report(rinfo);
-      this.emit('error', new Error('Invalid packet type from: ' + JSON.stringify(rinfo)));
+      /* If the packet isn't valid we drop. We still cannot confirm sender. */
+      //this._report(rinfo);
+      //this.emit('error', new Error('Invalid packet type from: ' + JSON.stringify(rinfo)));
       return;
     }
 
-    if (c === control.OPEN) {
-      const ver = msg.readUInt16BE(offset.VERSION);
-      if (ver !== version) {
-        this._reject(msg, rinfo, reject.VERSION);
+    if (pre.control === control.OPEN) {
+      debug('OPEN unpacking now.');
+      const open = p.unOpen(msg, this._openKeys.publicKey, this._openKeys.secretKey);
+
+      if (!open) {
+        crit('Whycome no open???');
+        /* Again. Still not enough information to report. Dropping packet. */
+        return;
+      }
+
+      debug(open.version);
+      if (open.version !== version) {
+        /* No way to verify sender. Reject with caution. */
+        // TODO reject once and temporarily record
+        //this._reject(msg, rinfo, reject.VERSION);
         return;
       }
 
       let connection = this._getAddress(sourceKey);
       if (!connection) {
-        const { routeLength, routeLengthOctets } = p.parseVarLength(msg, offset.ROUTE_LENGTH, 4);
-        if (routeLength < 0) {
-          this._report(sourceKey);
-          this._reject(msg, rinfo, reject.INVALID);
-          return;
-        }
-        const rOffset = offset.ROUTE_LENGTH + routeLengthOctets;
-        const routeBinary = msg.slice(rOffset, rOffset + routeLength);
-        if (!this._screenCb(routeBinary, rinfo)) {
+        if (!this._screenCb(open.route, rinfo)) {
+          /* Cannot verify sender. Reject with caution. */
           // TODO need a feature in report to indicate reject message or not, to prevent reflection attacks
-          this._report(sourceKey);
-          this.emit('error', new Error('Encountered screen offense.'));
-          this._reject(msg, rinfo, reject.USER);
+          //this._report(sourceKey);
+          //this._reject(msg, rinfo, reject.USER);
           return;
         }
 
         const newId = this._newId();
         if (!newId) {
+          /* Cannot verify sender. Reject with caution. */
           this._reject(msg, rinfo, reject.BUSY);
           return;
         }
-        connection = mkConnection(newId, this._socket.mkSender(rinfo));
-        this.setId(newId, connection);
-        this.setAddress(sourceKey, connection);
-      }
 
-      if (connection) {
-        const seq = msg.readUInt32BE(offset.SEQUENCE);
-        const buf = this._firewall(encrypted, c, seq, msg.slice(offset.OPEN_ENCRYPT));
-        if (buf) {
-          connection.handleOpenPacket(buf, this._allowUnsafePacket);
-        }
-        else {
-          this._report(sourceKey);
-          this.emit('error', new Error('Packet failed to pass firewall from: ' + JSON.stringify(rinfo)));
+        connection = mkConnection(newId, this._socket.mkSender(rinfo));
+        if (!connection) {
+          // TODO what to do??? is this a possibility?
           return;
         }
+
+        this._setId(newId, connection);
+        this._setAddress(sourceKey, connection);
       }
-      else {
-        /* Connection object will automatically reject as too busy. */
-        this.emit('error', new Error('Unable to create a connection object'));
-      }
+
+      connection.handleOpen(open);
     }
     else {
-      const connection = id ? this._getId(id) : null;
+      const connection = pre.id ? this._getId(pre.id) : null;
       if (connection) {
         // TODO
         const buf = connection.firewall();
@@ -662,8 +668,9 @@ class Router extends EventEmitter {
         }
       }
       else {
-        this._report(sourceKey);
-        this.emit('error', new Error('Invalid packet referencing non-existant connection: ' + String(rinfo)));
+        /* Unverified sender. Reject with caution. */
+        //this._report(sourceKey);
+        return;
       }
     }
   }
