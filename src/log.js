@@ -53,13 +53,10 @@ function normalize(args) {
     }
 
     const arg = args[i];
-    if (!arg) {
-      msg += '';
-    }
-    else if (typeof arg === 'string') {
+    if (typeof arg === 'string') {
       msg += arg;
     }
-    else if ((arg.stack && arg.message) || (arg instanceof Error)) {
+    else if (arg && ((arg.stack && arg.message) || (arg instanceof Error))) {
       msg += getLine1(arg) + ' -> ' + String(arg);
     }
     else {
