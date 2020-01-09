@@ -25,6 +25,12 @@ The details. Onwaaaard!
 ## Overview
 TODO
 
+
+## Dependencies
+Code for version 0 is dependent on NaCl or libsodium for encryption.
+Code implementing TRiP over UDP based communication is dependent on appropriate OS interfaces.
+
+
 ## VarInts and Serialization
 Variable length integers are denoted as "V" in the octets column.
 Variable length fields the length is listed first followed by data, denoted "VD".
@@ -127,15 +133,27 @@ The control value is added to the 5th octet of the nonce as part-of packet repla
 
 Control numbering starts at zero:
 Stream
-Reject
-Connect Open
-Connect Challenge
-Connect Response
+Open
+Challenge
+Response
+Forward
 Ping
 Renew
 Renew Confirm
+Disconnect Notice
+Disconnect Notice Confirm
 Disconnect
 Disconnect Confirm
+Reject
+
+
+### PREFIX
+Prefixed to every transmission.
+| Octets | Field |
+|:------ |:----- |
+| 1 | Control
+| 4 | ID
+| 4 | Sequence
 
 
 ### Stream
@@ -143,11 +161,9 @@ These are the most common packet types, so zero is used.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control = 0
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
-| V | STREAM_REQUESTS+
+| VD | STREAM+
 
 
 ### Reject
@@ -157,9 +173,7 @@ Considerations for DDoS Amplification should be taken into account.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID (Zero invalid)
-| 4 | Sequence
+| PRE | PREFIX
 | 48 | Encrypt
 | 8 | Timestamp
 | 2 | Rejection type
@@ -196,12 +210,10 @@ Use xchacha20poly1305 AEAD construction.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID (Zeros or ANY)
-| 4 | Sequence
+| PRE | PREFIX
 | 2 | Major Version ID
 | VD | Routing Information (Binary)
-| 48 | Encrypt AEAD
+| 48 | Encrypt
 | OPENING INFO |
 
 
@@ -213,11 +225,8 @@ If the OPENING INFO has different keys on resubmissions then it is considered ma
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
-| 2 | Major Version ID
-| 48 | Encrypt AEAD
+| PRE | PREFIX
+| 48 | Encrypt
 | OPENING INFO |
 
 
@@ -235,16 +244,29 @@ TODO should this be a part of it???
 | 1 | Allowed stream types, cannot be zero.
 
 
+### Forward
+Forwarding instructions.
+Should only be used with encryption.
+| Octets | Field |
+|:------ |:----- |
+| PRE | PREFIX
+| 4 | ID (Zeros or ANY)
+| 4 | Sequence
+| 48 | Encryption.
+| 2 | Major Version ID
+| VD | LOCATIONS+
+TODO.
+
+
 ### Response
+TODO should a ping just be returned and make pinging the connector's responsibility???
 Accept the server's CHALLENGE request.
 If the client does not respond with this then the connection is closed.
 The client cannot have lower limitations than the server.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
 | 8 | Timestamp
 | 24 | Nonce of server again for confirmation
@@ -264,10 +286,10 @@ If valid reject found, then terminate connection.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
+| 24 | Random 1
+| 24 | Random 2
 | 8 | Timestamp
 | 4 | RTT
 | 4 | Sent Count
@@ -279,9 +301,7 @@ Reset the sequence and get new keys.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
 | 4 | Non-zero New Sequence
 | 24 | New Nonce
@@ -293,14 +313,17 @@ Confirm that the reset has taken place.
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
 | 4 | Non-zero Old Sequence
 | 24 | Old Nonce
 | 32 | Old Key
 
+### Disconnect Notify
+TODO soft notice
+
+### Disconnect Notify Confirm
+TODO soft notice
 
 ### Disconnect
 Disconnect and nicely terminate connection.
@@ -309,9 +332,7 @@ After reasonable threshold, resend if not confirmed until confirmed, rejected, o
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
 | 8 | Timestamp
 | 24 | Nonce
@@ -325,15 +346,13 @@ If no ID is found the peer should respond with reject if DDoS amplification is n
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Control
-| 4 | ID
-| 4 | Sequence
+| PRE | PREFIX
 | 16 | Encrypt
 | 8 | Timestamp
 | 24 | Nonce
 
 
-## Stream Protocol
+### STREAM
 The Stream Protocol is internal and is parsed after decryption.
 As a checksum and to save an extra octet, the upper two bits of the Stream Control value are used to store the stream type, when applicable.
 Streams are optimistic, so they are opened with data being sent.
@@ -449,12 +468,23 @@ Note that default limits are set to be reasonable values for modern clients/serv
 ## Attack Mitigation
 Here we outline attack vectors and how they are overcome or mitigated.
 TODO - add additional details and analysis.
-TODO - additional research on other attacks, including attacks on encryption.
+TODO - additional research on other attacks.
+
+
+### Encryption
+Applying new methods of encryption and incrementing the version counter.
+Software will need to be updated upon updating encryption methods.
+Attacks can proceed against outdated software.
+Rejecting incorrect version numbers outright can prevent issues.
+Rejecting incorrect version numbers can signal that one or both parties must update.
+If a single encryption method breaks there is likely no other mitigation method.
+
 
 ### DDoS
 No known server-side solution.
 ISP, Firewall, and intermediate network devices may have ways of mitigating.
 Incoming traffic can be increasingly dropped and only previously established connections can be handled.
+
 
 ### DDoS Amplification
 **Problem:**
@@ -470,13 +500,16 @@ No perfect fix for public servers with unencryped OPEN or known public key.
 Mitigated by limiting OPEN packets.
 Temporarily tracking "sender" can reduce reject messages or OPEN accepts.
 
+
 ### Packet Replay
 Sequences, nonce, control, timestamps.
 Only OPEN messages can be replayed and with no damage or success.
 
+
 ### Man-in-the-Middle
 No known perfect solution.
 Fixed by using public key known in advance for OPEN connection.
+
 
 ### Man-in-the-Middle Through Packet Injection
 While this is tricky and unlikely due to timing there are ways of mitigating.
@@ -486,6 +519,7 @@ Routing, version tampering is fixed by encrypting a hash of them.
 Tampering with the sequence, control, or ID just results in bad message
 for encrypted connections.
 Unencrypted connections are prone to issues with tampering currently.
+
 
 ### Packet Injection
 Disrupting services through IP/UDP packet fabrication.
