@@ -5,7 +5,8 @@ The details. Onwaaaard!
 
 
 ## Definitions and Terms
-**packet:** Raw data transmitted, not including IP/UDP or other headers.
+**packet:** Raw data transmitted, including IP, UDP, and other headers.
+**segment**: Raw data once non-TRiP headers are stripped.
 **rinfo:** Return information.  
 **socket:** Interface to sending/receiving packet information.  
 **sender:** Context for sending to specific destination using a socket.  
@@ -17,13 +18,18 @@ The details. Onwaaaard!
 **fragment:** Part of a message.  
 **client:** The peer seeking to OPEN a connection.  
 **server:** The peer receiving the OPEN request.  
-**peer**: Client or server router able to create connections.  
-**disconnect/closed**: Soft disconnect with proper notification.  
-**terminate**: Hard disconnect without any notification.  
+**peer**: The other end of the connection.
+**disconnect**: Soft disconnect with proper notification.  
+**kill**: Hard disconnect without any notification.  
 
 
 ## Overview
-TODO
+The River Protocol (TRiP) is intended to be a flexible protocol that allows
+for the easy building of custom protocols.
+TRiP is designed to be abstracted with security by default.
+TRiP is designed to allow for different types of communication.
+Hopefully you find TRiP useful for your application.
+Enjoy!
 
 
 ## Dependencies
