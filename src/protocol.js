@@ -6,7 +6,7 @@
 /* Community */
 const Long = require('long');
 /* Custom */
-const { trace, debug, warn } = require('./log.js');
+const { trace, /*debug,*/ warn, crit } = require('./log.js');
 const crypto = require('./crypto.js');
 'use strict';
 
@@ -79,15 +79,17 @@ const length = {
 length.UDP_MTU_DATA_MIN = length.UDP_MTU_MIN - length.IP_HEADER - length.UDP_HEADER;
 length.UDP_MTU_DATA_REC = length.UDP_MTU_REC - length.IP_HEADER - length.UDP_HEADER;
 length.UDP_MTU_DATA_MAX = length.UDP_MTU_MAX - length.IP_HEADER - length.UDP_HEADER;
-/* Required prefix of every packet. */
+/* Required prefix of every segment. */
 length.PREFIX = length.CONTROL + length.ID + length.SEQUENCE;
-/* OPEN packet length. */
+/* OPEN payload length. */
 length.OPEN_DATA =
   length.HASH +
   length.ID + length.TIMESTAMP +
   length.NONCE + length.PUBLIC_KEY +
   length.CURRENCY + length.RATE + length.STREAMS + length.MESSAGE;
-/* REJECT packet length. */
+/* CHALLENGE payload length. */
+length.CHALLENGE_DATA = length.OPEN_DATA;
+/* REJECT segment length. */
 length.REJECT_DATA = length.TIMESTAMP + length.REJECT_CODE + 1;
 length.REJECT_DECRYPT = length.PREFIX + length.REJECT_DATA;
 length.REJECT_ENCRYPT = length.REJECT_DECRYPT + length.SEAL_PADDING;
@@ -128,11 +130,19 @@ const control = {
   BYTE_MASK: 0x0FF,
 
   STREAM:    0x00,
-  REJECT:    0x02,
   OPEN:      0x01,
-  CHALLENGE: 0x03,
-  ACCEPT:    0x04,
+  CHALLENGE: 0x02,
+  RESPONSE:  0x03,//TODO replace with immediate ping?
+  FORWARD:   0x04,
   PING:      0x05,
+  RENEW:     0x06,
+  RENEWR:    0x07,
+  NOTIFY:    0x08,
+  NOTIFYR:   0x09,
+  KILL:      0x0A,
+  KILLR:     0x0B,
+  REJECT:    0x0C,
+  MAX:       0x0C,
 };
 Object.freeze(control);
 
@@ -162,6 +172,15 @@ const defaults = {
   PORT_MEH: 42080, /* Unencrypted connection. Meh. */
 };
 Object.freeze(defaults);
+
+/**
+ * Create a timestamp from the bytes.
+ * @return {Long} Time in Unix epock milliseconds.
+ * TODO return error if doesn't pass lint check/validation.
+ */
+function mkTime(buf) {
+  return Long.fromBytesBE(buf);
+}
 
 /**
  * Create the current time.
@@ -247,7 +266,6 @@ function lenPrefix() {
  */
 function addPrefix(buf, encrypted, c, id, sequence) {
   trace();
-  debug(arguments);
 
   const l = length;
 
@@ -278,6 +296,64 @@ function unPrefix(buf) {
   pre.seq = buf.readUInt32BE(o.SEQUENCE);
 
   return pre;
+}
+
+/**
+ * @return {number} Zero on failure; length written otherwise.
+ */
+function mkReject(buf, timestamp, rejectCode, rejectMessage) {
+  if (buf.length < length.REJECT_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  offset += length.TIMESTAMP/2;
+  buf.writeUInt16BE(rejectCode, offset);
+  offset += length.REJECT_CODE;
+
+  if (rejectMessage) {
+    Buffer.from(rejectMessage, 'utf8').copy(buf, offset, 0);
+    offset += Buffer.byteLength(rejectMessage, 'utf8');
+  }
+
+  buf[offset] = 0;
+
+  ++offset;
+
+  return offset;
+}
+
+/**
+ * @return {boolean} True on success; false otherwise.
+ */
+function unReject(out, buf) {
+  if (buf.length < length.REJECT_DATA) {
+    return 0;
+  }
+
+  let offset = 0;
+  out.timestamp = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
+  offset += length.TIMESTAMP;
+
+  out.code = buf.readUInt16BE(offset);
+  if (out.code < reject.UNKNOWN || out.code > reject.ERROR) {
+    return false;
+  }
+  offset += length.REJECT_CODE;
+
+  if (buf[buf.length - 1] !== 0) {
+    return false;
+  }
+
+  let message = '';
+  if ((buf.length - 1) > offset) {
+    message = buf.toString('utf8', offset, buf.length);
+  }
+  out.message = message;
+  return true;
 }
 
 function lenOpen(routingLen) {
@@ -390,6 +466,7 @@ function unOpen(buf, publicKey, secretKey) {
   open.route = buf.slice(len, routeLen);
   len += routeLen;
 
+  /* Check route length's validity. */
   if ((l.OPEN_DATA + l.SEAL_PADDING) !== (buf.length - len)) {
     return null;
   }
@@ -400,6 +477,22 @@ function unOpen(buf, publicKey, secretKey) {
     return null;
   }
 
+  /*
+   * TODO lint key and nonce
+  if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
+    if (!allowUnsafePacket) {
+      this.emit('error', new Error('Unsafe packets not allowed'));
+      this.sendReject(reject.UNSAFE);
+      break;
+    }
+  }
+  else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
+    this.emit('error', new Error('Invalid credentials'));
+    this.sendReject(reject.INVALID);
+    break;
+  }
+  */
+
   const hash = m.slice(0, l.HASH);
   if (!crypto.verifyHash(buf.slice(0, len), hash)) {
     warn('Bad hash!');
@@ -409,11 +502,13 @@ function unOpen(buf, publicKey, secretKey) {
   let off = l.HASH;
   open.id = m.readUInt32BE(off);
   off += l.ID;
-  // TODO open.time =;
+  open.time = mkTime(m.slice(off, l.TIMESTAMP));
   off += l.TIMESTAMP;
-  // TODO
+  open.nonce = Buffer.allocUnsafeSlow(l.NONCE);
+  m.copy(open.nonce, 0, off, off + l.NONCE);
   off += l.NONCE;
-  // TODO
+  open.key = Buffer.allocUnsafeSlow(l.PUBLIC_KEY);
+  m.copy(open.key, 0, off, off + l.PUBLIC_KEY);
   off += l.PUBLIC_KEY;
   open.currency = m.readUInt32BE(off);
   off += l.CURRENCY;
@@ -428,68 +523,145 @@ function unOpen(buf, publicKey, secretKey) {
 }
 
 /**
- * @return {number} Zero on failure; length written otherwise.
+ * @return Length of the challenge segment buffer.
  */
-function mkReject(buf, timestamp, rejectCode, rejectMessage) {
-  if (buf.length < length.REJECT_DATA) {
-    return 0;
-  }
+function lenChallenge() {
+  trace();
 
-  let offset = 0;
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt16BE(rejectCode, offset);
-  offset += length.REJECT_CODE;
+  const l = length;
 
-  if (rejectMessage) {
-    Buffer.from(rejectMessage, 'utf8').copy(buf, offset, 0);
-    offset += Buffer.byteLength(rejectMessage, 'utf8');
-  }
+  const encrypted = l.SEAL_PADDING + l.CHALLENGE_DATA;
 
-  buf[offset] = 0;
-
-  ++offset;
-
-  return offset;
+  return lenPrefix() + encrypted;
 }
 
-/**
- * @return {boolean} True on success; false otherwise.
- */
-function unReject(out, buf) {
-  if (buf.length < length.REJECT_DATA) {
-    return 0;
+function mkChallenge(peerId, seq, peerKey, id, timestamp, selfNonce, selfKey, currency, rate, streams, messages) {
+  trace();
+
+  const l = length;
+
+  const bufLen = lenChallenge();
+  const buf = Buffer.allocUnsafe(bufLen);
+  let len = 0;
+
+  /* Write unencrypted portion of data to the buffer. */
+
+  let preLen = addPrefix(buf, !!peerKey, control.CHALLENGE, peerId, seq);
+  if (!preLen) {
+    crit('Invalid prefix length for CHALLENGE.');
+    return null;
+  }
+  
+  len += preLen;
+
+  /* Unencrypted data has been written. Write encrypted to tmp. */
+  const tmp = Buffer.allocUnsafe(l.CHALLENGE_DATA);
+  let tlen = 0;
+
+  /* Hash unencrypted data to help ensure it wasn't tampered with. */
+  const hash = crypto.mkHash(buf.slice(0, len));
+  hash.copy(tmp, 0, 0, l.HASH);
+  tlen += l.HASH;
+
+  tmp.writeUInt32BE(id, tlen);
+  tlen += l.ID;
+  tmp.writeUInt32BE(timestamp.getHighBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+
+  selfNonce.copy(tmp, tlen, 0, length.NONCE);
+  tlen += l.NONCE;
+  selfKey.copy(tmp, tlen, 0, length.PUBLIC_KEY);
+  tlen += l.PUBLIC_KEY;
+
+  tmp.writeUInt32BE(currency, tlen);
+  tlen += l.CURRENCY;
+  tmp.writeUInt32BE(rate, tlen);
+  tlen += l.RATE;
+  tmp.writeUInt32BE(streams, tlen);
+  tlen += l.STREAMS;
+  tmp.writeUInt32BE(messages, tlen);
+  tlen += l.MESSAGE;
+
+  if (peerKey) {
+    if (!crypto.seal(buf.slice(len), tmp.slice(0, tlen), peerKey)) {
+      crit('Could not seal CHALLENGE.');
+      return null;
+    }
+  }
+  else {
+    tmp.copy(buf, len, 0, tlen);
   }
 
-  let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
-  offset += length.TIMESTAMP;
-
-  out.code = buf.readUInt16BE(offset);
-  if (out.code < reject.UNKNOWN || out.code > reject.ERROR) {
-    return false;
-  }
-  offset += length.REJECT_CODE;
-
-  if (buf[buf.length - 1] !== 0) {
-    return false;
-  }
-
-  let message = '';
-  if ((buf.length - 1) > offset) {
-    message = buf.toString('utf8', offset, buf.length);
-  }
-  out.message = message;
-  return true;
+  return buf;
 }
 
-const mkChallenge = mkOpen;
+function unChallenge(buf, publicKey, secretKey) {
+  const l = length;
 
-const unChallenge = unOpen;
+  let len = l.PREFIX;
+  const chal = {};
 
-function mkAccept(buf, timestamp, nonce) {
+  // TODO check length
+
+  /* Check route length's validity. */
+  if ((l.CHALLENGE_DATA + l.SEAL_PADDING) !== (buf.length - len)) {
+    return null;
+  }
+
+  const m = Buffer.allocUnsafe(l.OPEN_DATA);
+
+  if (!crypto.unseal(m, buf.slice(len), publicKey, secretKey)) {
+    return null;
+  }
+
+  /*
+   * TODO
+  if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
+    if (!allowUnsafePacket) {
+      this.emit('error', new Error('Unsafe packets not allowed'));
+      this.sendReject(reject.UNSAFE);
+      break;
+    }
+  }
+  else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
+    this.emit('error', new Error('Invalid credentials'));
+    this.sendReject(reject.INVALID);
+    break;
+  }
+  */
+
+  const hash = m.slice(0, l.HASH);
+  if (!crypto.verifyHash(buf.slice(0, len), hash)) {
+    warn('Bad hash!');
+    return null;
+  }
+
+  let off = l.HASH;
+  chal.id = m.readUInt32BE(off);
+  off += l.ID;
+  chal.time = mkTime(m.slice(off, l.TIMESTAMP));
+  off += l.TIMESTAMP;
+  chal.nonce = Buffer.allocUnsafeSlow(l.NONCE);
+  m.copy(chal.nonce, 0, off, off + l.NONCE);
+  off += l.NONCE;
+  chal.key = Buffer.allocUnsafeSlow(l.PUBLIC_KEY);
+  m.copy(chal.key, 0, off, off + l.PUBLIC_KEY);
+  off += l.PUBLIC_KEY;
+  chal.currency = m.readUInt32BE(off);
+  off += l.CURRENCY;
+  chal.rate = m.readUInt32BE(off);
+  off += l.RATE;
+  chal.maxStreams = m.readUInt32BE(off);
+  off += l.STREAMS;
+  chal.maxMessage = m.readUInt32BE(off);
+  off += l.MESSAGE;
+
+  return chal;
+}
+
+function mkResponse(buf, timestamp, nonce) {
   if (buf.length !== length.ACCEPT_DATA) {
     return 0;
   }
@@ -505,7 +677,7 @@ function mkAccept(buf, timestamp, nonce) {
   return offset;
 }
 
-function unAccept(out, buf) {
+function unResponse(out, buf) {
   if (buf.length !== length.ACCEPT_DATA) {
     return false;
   }
@@ -551,6 +723,11 @@ function unPing(out, buf) {
   return true;
 }
 
+/**
+ * Golden ratio for exponential backoff.
+ */
+const RATIO = 1.61803398875;
+
 module.exports = {
   version,
   timeout,
@@ -568,7 +745,16 @@ module.exports = {
   lenOpen,
   addPrefix,
   unPrefix,
+  mkReject,
+  unReject,
   mkOpen,
   unOpen,
+  mkChallenge,
+  unChallenge,
+  mkResponse,
+  unResponse,
+  mkPing,
+  unPing,
+  RATIO,
 };
 

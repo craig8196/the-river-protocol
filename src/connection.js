@@ -12,10 +12,10 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { trace } = require('./log.js');
+const { trace, info, warn, crit } = require('./log.js');
 const p = require('./protocol.js');
 const { SenderInterface } = require('./socket.js');
-const { version, length, limit, control, reject } = p;
+const { version, timeout, length, limit, control/*, reject*/ } = p;
 'use strict';
 
 
@@ -25,12 +25,12 @@ Event.initEnum([
   'OPEN_RECV',
   'OPEN_TIMEOUT',
   'OPEN_ERROR',
-  'CHALLENGE',
   'CHALLENGE_RECV',
   'CHALLENGE_TIMEOUT',
-  'RESPONSE',
-  'RESPONSE_RECV',
-  'RESPONSE_TIMEOUT',
+  'CHALLENGE_ERROR',
+  'PING',
+  'PING_TIMEOUT',
+  'PING_ERROR',
   'STREAM_RECV',
   'REJECT_RECV',
   'DISCONNECT',
@@ -42,12 +42,12 @@ State.initEnum({
     enter() {
     },
 
-    transition(e) {
+    transition(e, data) {
       switch (e) {
         case Event.OPEN:
           return State.OPEN;
         case Event.OPEN_RECV:
-          // TODO parse open message
+          this._setPeer(data);
           return State.CHALLENGE;
         default:
           this.emit('error', new Error('Expected OPEN* events. Found: ' + String(e.name)));
@@ -71,13 +71,9 @@ State.initEnum({
     transition(e) {
       switch (e) {
         case Event.OPEN_TIMEOUT:
-          //TODO handle open timeout event
-          this.emit('error', new Error('Unimplemented case: ' + String(e.name)));
           return State.ERROR;
         case Event.CHALLENGE_RECV:
-          // TODO process CHALLENGE
-          this.emit('error', new Error('Unimplemented case: ' + String(e.name)));
-          return State.RESPONSE;
+          return State.PING;
         default:
           this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
           return State.ERROR;
@@ -91,10 +87,19 @@ State.initEnum({
 
   'CHALLENGE': {
     enter() {
+      this._startChallengeAlgorithm();
     },
 
-    transition(e) {
+    transition(e, data) {
       switch (e) {
+        case Event.PING:
+          this._setPeerPing(data);
+          this._sendPing();
+          return State.READY;
+        case Event.OPEN_RECV:
+          /* Update the peer data incase peer changed certain parameters. */
+          this._setPeer(data);
+          return State.CHALLENGE;
         default:
           this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
           return State.ERROR;
@@ -102,15 +107,19 @@ State.initEnum({
     },
 
     exit() {
+      this._stopChallengeAlgorithm();
     },
   },
 
-  'RESPONSE': {
+  'PING': {
     enter() {
+      this._startPingAlgorithm();
     },
 
     transition(e) {
       switch (e) {
+        case Event.PING:
+          return State.READY_PING;
         default:
           this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
           return State.ERROR;
@@ -118,6 +127,7 @@ State.initEnum({
     },
 
     exit() {
+      this._stopPingAlgorithm();
     },
   },
 
@@ -254,7 +264,6 @@ class Connection extends EventEmitter {
 
     this.sequenceWindow = length.WINDOW;
 
-    this.rttMs = timeouts.RTT;
     this.rttTotal = timeouts.RTT;
     this.rttCount = 1;
 
@@ -270,6 +279,11 @@ class Connection extends EventEmitter {
     this._peerNonce = null;
     this._selfNonce = options.nonce;
 
+    // TODO implement bitmap
+    this._peerSequenceMap = {};
+
+    this._rttMs = timeout.RTT;
+
     // TODO make sure these are checked on making
     this._maxCurrency = limit.CURRENCY;
     this._regenCurrency = limit.CURRENCY_REGEN;
@@ -279,12 +293,14 @@ class Connection extends EventEmitter {
     this._curCurrency = this._maxCurrency;
     this._curStreams = this._maxStreams;
 
-    this.sequence = 0;
+    this._sequence = 0;
 
     this._timestamp = p.mkTimeNow();
 
     // TODO determine better default timeout?
     this._openMaxTimeout = 60000; /* 1 minute */
+    this._challengeMaxTimeout = 15000; /* 15 seconds */
+    this._pingMaxTimeout = 20000; /* 20 seconds */
 
     this._internalState = State.START;
     this._internalState.enter();
@@ -323,24 +339,94 @@ class Connection extends EventEmitter {
    * @private
    */
   _transition(eventType, eventData) {
+    info('State:', this._internalState.name, '|Transition:', eventType.name);
+
     this._state = this._state.transition.call(this, eventType, eventData);
   }
 
   /**
-   * Start the open connection handshake.
+   * @private
+   * @return The next sequence number.
    */
-  _startOpenAlgorithm() {
+  get _sequence() {
+    return this._internalSequence++;
+  }
+
+  /**
+   * Set the sequence. Usually when initializing.
+   * @private
+   */
+  set _sequence(val) {
+    this._internalSequence = val;
+  }
+
+  /**
+   * @private
+   */
+  _checkSequence(seq) {
     trace();
 
-    const maxTime = this._openMaxTimeout;
+    if (seq in this._peerSequenceMap) {
+      return false;
+    }
 
-    function _openCycle(conn, counter, timeout, totalTime) {
-      trace();
+    return true;
+  }
 
-      totalTime += timeout;
-      if (totalTime > maxTime) {
-        conn.emit('error', new Error('Open message timed out.'));
-        conn._transition(Event.OPEN_TIMEOUT);
+  /**
+   * @private
+   */
+  _flagSequence(seq) {
+    trace();
+
+    // TODO implement functionality
+    this._peerSequenceMap[seq] = true;
+    // this._peerSequenceMap.add(seq);
+  }
+  
+  /**
+   * Set the peer data.
+   * @private
+   * TODO validate for malicious changes, can be recalled...
+   */
+  _setPeer(data) {
+    trace();
+
+    this._peerId = data.id;
+    this._peerKey = data.key;
+    this._peerNonce = data.nonce;
+    this._peerTimestamp = data.timestamp;
+    this._peerVersion = data.version;
+    this._peerMaxCurrency = data.maxCurrency;
+    this._peerMaxStreams = data.maxStreams;
+    this._peerMaxMessage = data.maxMessage;
+  }
+
+  /**
+   * Set the peer data from a ping.
+   * @private
+   */
+  _setPeerPing(/*data*/) {
+    trace();
+
+    //TODO
+  }
+
+  /**
+   * Start the open connection handshake.
+   * @private
+   */
+  _startRetryAlgorithm(handleName, actionCb, timeoutCb, errorCb, rttMs, maxTimeMs) {
+    trace();
+
+    const conn = this;
+
+    function _retry(counter, timeoutMs, totalTimeMs) {
+      trace('Retry args [counter, timeoutMs, totalTimesMs', arguments);
+
+      totalTimeMs += timeoutMs;
+      if (totalTimeMs > maxTimeMs) {
+        timeoutCb();
         return;
       }
 
@@ -348,35 +434,170 @@ class Connection extends EventEmitter {
 
       if (counter === 3) {
         counter = 0;
-        timeout *= 2;
+        timeoutMs *= p.RATIO;
       }
 
-      if (conn._sendOpen()) {
-        conn._timeoutOpenHandle =
-          setTimeout(_openCycle, timeout, conn, counter, timeout, totalTime);
+      if (actionCb()) {
+        if (!timeoutMs) {
+          timeoutMs = rttMs;
+        }
+
+        conn[handleName] =
+          setTimeout(_retry, timeoutMs, counter, timeoutMs, totalTimeMs);
       }
       else {
-        conn.emit('error', new Error('Unable to create/send open message'));
-        conn._transition(Event.OPEN_ERROR);
+        errorCb();
       }
     }
 
-    _openCycle(this, 0, (this.rttMs > 200 ? 200 : this.rttMs), 0);
+    _retry(0, 0, 0);
   }
 
   /**
    * Stop the open connection.
    */
-  _stopOpenAlgorithm() {
+  _stopRetryAlgorithm(handleName) {
     trace();
 
-    if (this._timeoutOpenHandle) {
-      clearTimeout(this._timeoutOpenHandle);
+    if (handleName in this) {
+      clearTimeout(this[handleName]);
     }
   }
 
   /**
+   * Start the open connection handshake.
+   * @private
+   */
+  _startOpenAlgorithm() {
+    trace();
+
+    const conn = this;
+    const handle = '_timeoutOpenHandle';
+
+    function actionCb() {
+      return conn._sendOpen();
+    }
+
+    function timeoutCb() {
+      warn('OPEN message timed out.');
+      conn._transition(Event.OPEN_TIMEOUT);
+    }
+
+    function errorCb() {
+      warn('Unable to create/send OPEN message.');
+      conn._stopOpenAlgorithm();
+      conn._transition(Event.OPEN_ERROR);
+    }
+
+    const rtt = this._rttMs;
+    const limit = this._openMaxTimeout;
+
+    this._startRetryAlgorithm(handle, actionCb, timeoutCb, errorCb, rtt, limit);
+  }
+
+  /**
+   * Stop the open connection.
+   * @private
+   */
+  _stopOpenAlgorithm() {
+    trace();
+
+    this._stopRetryAlgorithm('_timeoutOpenHandle');
+  }
+
+  /**
+   * Start the connection challenge.
+   * @private
+   */
+  _startChallengeAlgorithm() {
+    trace();
+
+    const conn = this;
+    const handle = '_timeoutChallengeHandle';
+
+    function actionCb() {
+      return conn._sendChallenge();
+    }
+
+    function timeoutCb() {
+      warn('CHALLENGE message timed out.');
+      conn._transition(Event.CHALLENGE_TIMEOUT);
+    }
+
+    function errorCb() {
+      warn('Unable to create/send CHALLENGE message.');
+      conn._stopChallengeAlgorithm();
+      conn._transition(Event.CHALLENGE_ERROR);
+    }
+
+    const rtt = this._rttMs;
+    const limit = this._challengeMaxTimeout;
+
+    this._startRetryAlgorithm(handle, actionCb, timeoutCb, errorCb, rtt, limit);
+  }
+
+  /**
+   * Stop the connection challenge.
+   * @private
+   */
+  _stopChallengeAlgorithm() {
+    trace();
+
+    this._stopRetryAlgorithm('_timeoutChallengeHandle');
+  }
+
+  /**
+   * Start the ping.
+   * @private
+   */
+  _startPingAlgorithm() {
+    trace();
+
+    const conn = this;
+    const handle = '_timeoutPingHandle';
+
+    function actionCb() {
+      return conn._sendPing();
+    }
+
+    function timeoutCb() {
+      warn('PING message timed out.');
+      conn._transition(Event.PING_TIMEOUT);
+    }
+
+    function errorCb() {
+      warn('Unable to create/send PING message.');
+      conn._stopPingAlgorithm();
+      conn._transition(Event.PING_ERROR);
+    }
+
+    const rtt = this._rttMs;
+    const limit = this._pingMaxTimeout;
+
+    this._startRetryAlgorithm(handle, actionCb, timeoutCb, errorCb, rtt, limit);
+  }
+
+  /**
+   * Stop the ping.
+   * @private
+   */
+  _stopPingAlgorithm() {
+    trace();
+
+    this._stopRetryAlgorithm('_timeoutPingHandle');
+  }
+
+  /**
+   * Send any data.
+   * @private
+   */
+  _sendData() {
+    //TODO
+  }
+
+  /**
    * Create and send the open packet.
+   * @private
    */
   _sendOpen() {
     trace();
@@ -405,28 +626,102 @@ class Connection extends EventEmitter {
   }
 
   /**
-   * Update the sender. Useful if you are using DDNS.
+   * Create and send the challenge packet.
+   * @private.
    */
-  setSender(sender) {
-    this._sender = sender;
+  _sendChallenge() {
+    trace();
+
+    const buf = p.mkChallenge(
+      this._peerId,
+      this._sequence,
+      this._peerKey,
+      this._id,
+      this._timestamp,
+      this._selfNonce,
+      this._selfKeys.publicKey,
+      this._maxCurrency,
+      this._regenCurrency,
+      this._maxStreams,
+      this._maxMessage,
+    );
+
+    if (!buf) {
+      return false;
+    }
+
+    this._sender.send(buf);
+
+    return true;
   }
 
+  /**
+   * Send a ping.
+   * @private
+   */
+  _sendPing() {
+    trace();
 
+    const buf = p.mkPing(
+      //TODO
+    );
 
+    if (!buf) {
+      return false;
+    }
 
+    this._sender.send(buf);
 
+    return true;
+  }
 
+  /**
+   * Send a request to renew sequence numbers, nonce, and keys.
+   * @private
+   */
+  _sendRenew() {
+    // TODO
+  }
 
+  /**
+   * Send a request to renew sequence numbers, nonce, and keys.
+   * @private
+   */
+  _sendNotify() {
+    // TODO
+  }
 
+  /**
+   * Notify disconnect.
+   * @private
+   */
+  _sendNotifyConfirm() {
+    // TODO
+  }
 
+  /**
+   * Send a request to renew sequence numbers, nonce, and keys.
+   * @private
+   */
+  _sendDisconnect() {
+    // TODO
+  }
 
+  /**
+   * Confirm disconnect.
+   * @private
+   */
+  _sendDisconnectConfirm() {
+    // TODO
+  }
 
-
-
-
-
-
-  // TODO allow the router to set the window
+  /**
+   * Send reject message.
+   * @private
+   */
+  _sendReject() {
+    // TODO
+  }
 
   /**
    * Any value less than or equal to is guaranteed single packet delivery.
@@ -449,490 +744,6 @@ class Connection extends EventEmitter {
     return this.umtu * length.MAX_FRAGMENT;
   }
 
-  get sequence() {
-    return this._sequence++;
-  }
-
-  set sequence(val) {
-    this._sequence = val;
-  }
-  
-  validatePeerSequence(seq) {
-    if (seq < this.peer.minSequence || seq > this.peer.maxSequence) {
-      return false;
-    }
-
-    return true;
-  }
-
-  _flagPeerSequence(seq) {
-    if (seq > this.peer.midSequence) {
-      this.peer.minSequence = seq - this.sequenceWindow;
-      this.peer.midSequence = seq;
-      this.peer.maxSequence = seq + this.sequenceWindow;
-    }
-    else {
-      /* I'm not sure if this is a great idea, but we can shrink the window. */
-      ++this.peer.minSequence;
-    }
-  }
-
-  /**
-   * Protect ourselves through encryption and from packet replay attacks.
-   * @param {Buffer} buf - The incoming buffer slice.
-   * @param {Buffer} seq - The binary sequence slice.
-   * @param {integer} c - The control number.
-   * @param {boolean} encrypted - Whether or not the buffer is encrypted.
-   * @return {Buffer} Decrypted buffer if no fishy business detected; null otherwise.
-   */
-  firewall(buf, seq, c, encrypted) {
-    const sequence = seq.readUInt32BE(0);
-
-    if (!this.validatePeerSequence(sequence)) {
-      return null;
-    }
-
-    if (encrypted) {
-      switch (c) {
-        /*
-        case control.STREAM:
-        case control.ACCEPT:
-        case control.PING:
-          {
-            // Create specific nonce for this packet.
-            const nonce = this.getNonceScratch();
-            nonce[0] = (nonce[0] + data.control) & control.BYTE_MASK;
-            nonce[length.NONCE - 1] = (nonce[length.NONCE - 1] + seq[0]) & control.BYTE_MASK;
-            nonce[length.NONCE - 2] = (nonce[length.NONCE - 2] + seq[1]) & control.BYTE_MASK;
-            nonce[length.NONCE - 3] = (nonce[length.NONCE - 3] + seq[2]) & control.BYTE_MASK;
-            nonce[length.NONCE - 4] = (nonce[length.NONCE - 4] + seq[3]) & control.BYTE_MASK;
-
-            // Unbox message.
-            if (crypto.unbox(decryptBuf, buf, nonce, this.keys.publicKey, this.keys.secretKey)) {
-            }
-            else {
-              return null;
-            }
-
-            // Set return buffer.
-            const len = buf.length - length.BOX_PADDING;
-            buf = decrypteBuf.slice(0, len);
-          }
-          break;
-          */
-        case control.OPEN:
-          {
-            const decryptBuf = Buffer.allocUnsafe(length.OPEN_DATA);
-            const pk = this.router.keys.publicKey;
-            const sk = this.router.keys.secretKey;
-
-            // Unseal message.
-            if (!crypto.unseal(decryptBuf, buf, pk, sk)) {
-              this.emit('error', new Error('Unable to decrypt buffer'));
-              return null;
-            }
-
-            // Set return buffer.
-            buf = decryptBuf;
-          }
-          break;
-        case control.REJECT:
-        //case control.CHALLENGE:
-          {
-            const decryptBuf = Buffer.allocUnsafe(buf.length - length.SEAL_PADDING);
-            const pk = this.keys.publicKey;
-            const sk = this.keys.secretKey;
-
-            // Unseal message.
-            if (!crypto.unseal(decryptBuf, buf, pk, sk)) {
-              this.emit('error', new Error('Unable to decrypt buffer'));
-              return null;
-            }
-
-            // Set return buffer.
-            buf = decryptBuf;
-          }
-          break;
-        default:
-          return null;
-      }
-    }
-
-    this._flagPeerSequence(sequence);
-
-    return buf;
-  }
-
-  // TODO handleOpen... data decrypted prior since keys are at router level
-
-  handleOpenPacket(buf, allowUnsafePacket) {
-    switch (this.state) {
-      case State.CREATE:
-      case State.CHALLENGE:
-        {
-          const out = {};
-          if (unOpen(out, buf)) {
-            if (!out.id) {
-              this.emit('error', new Error('Invalid peer id'));
-              break;
-            }
-
-            // TODO check timestamp
-
-            if (version !== out.version) {
-              this.emit('error', new Error('Invalid peer version'));
-              this.sendReject(reject.VERSION);
-              break;
-            }
-
-            if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
-              if (!allowUnsafePacket) {
-                this.emit('error', new Error('Unsafe packets not allowed'));
-                this.sendReject(reject.UNSAFE);
-                break;
-              }
-            }
-            else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
-              this.emit('error', new Error('Invalid credentials'));
-              this.sendReject(reject.INVALID);
-              break;
-            }
-
-            this.peer.id = out.id;
-            this.peer.timestamp = out.timestamp;
-            this.peer.version = out.version;
-            this.peer.currency = out.currency;
-            this.peer.streamsLimit = out.streams;
-            this.peer.messagesLimit = out.messages;
-            this.peer.nonce = out.nonce;
-            this.peer.publicKey = out.publicKey;
-
-            if (!this.id) {
-              this.emit('error', new Error('Reject due to business'));
-              this.sendReject(reject.BUSY);
-              break;
-            }
-
-            this.challenge();
-          }
-          else {
-            this.emit('error', new Error('Invalid open request'));
-            this.end();
-          }
-        }
-        break;
-      default:
-        {
-          this.emit('error', new Error('Unexpected handle open call'));
-        }
-        break;
-    }
-  }
-
-  handleRejectPacket(buf) {
-    /* Any state */
-    const out = {};
-    if (unReject(out, buf)) {
-      // TODO check timestamp
-
-      this.emit('reject', out.code, out.message);
-
-      this.cleanup();
-    }
-    else {
-      this.emit('error', new Error('Invalid reject response'));
-    }
-  }
-
-  handleChallengePacket(buf, allowUnsafePacket) {
-    switch (this.state) {
-      case State.OPEN:
-        {
-          const out = {};
-          if (unChallenge(out, buf)) {
-            if (!out.id) {
-              this.emit('error', new Error('Invalid peer id'));
-              break;
-            }
-
-            // TODO check timestamp
-
-            if (version !== out.version) {
-              this.emit('error', new Error('Invalid peer version'));
-              this.sendReject(reject.VERSION);
-              break;
-            }
-
-            if (crypto.NO_NONCE.equals(out.nonce) && crypto.NO_KEY.equals(out.publicKey)) {
-              if (!allowUnsafePacket) {
-                this.emit('error', new Error('Unsafe packets not allowed'));
-                this.sendReject(reject.UNSAFE);
-                break;
-              }
-            }
-            else if (crypto.NO_NONCE.equals(out.nonce) || crypto.NO_KEY.equals(out.publicKey)) {
-              this.emit('error', new Error('Invalid credentials'));
-              this.sendReject(reject.INVALID);
-              break;
-            }
-
-            this.peer.id = out.id;
-            this.peer.timestamp = out.timestamp;
-            this.peer.version = out.version;
-            this.peer.currency = out.currency;
-            this.peer.streamsLimit = out.streams;
-            this.peer.messagesLimit = out.messages;
-            this.peer.nonce = out.nonce;
-            this.peer.publicKey = out.publicKey;
-
-            if (!this.id) {
-              this.emit('error', new Error('Reject due to business'));
-              this.sendReject(reject.BUSY);
-              break;
-            }
-
-            this.accept();
-          }
-          else {
-            this.emit('error', new Error('Invalid open request'));
-            this.end();
-          }
-        }
-        break;
-      default:
-        {
-          const err = new Error('Unexpected challenge packet');
-          this.emit('error', err);
-        }
-        break;
-    }
-  }
-
-  handleAcceptPacket(buf) {
-    switch (this.state) {
-      case State.CHALLENGE:
-        {
-          const out = {};
-          if (unAccept(out, buf)) {
-            if (!this.nonce.equals(out.nonce)) {
-              this.emit('error', new Error('Invalid nonce'));
-              this.sendReject(reject.INVALID);
-              break;
-            }
-
-            this.state = State.CONNECT;
-            this.emit('connect');
-            this.ping();
-          }
-          else {
-            this.emit('error', new Error('Invalid accept request'));
-          }
-        }
-        break;
-      default:
-        {
-          const err = new Error('Unexpected accept packet');
-          this.emit('error', err);
-        }
-        break;
-    }
-  }
-
-  handlePingPacket(buf) {
-    switch (this.state) {
-      case State.ACCEPT:
-      case State.CONNECT:
-        {
-          const out = {};
-
-          if (unPing(out, buf)) {
-            // TODO return if init ping, else disable our ping if matching
-            // TODO delete this.pingNonce once this is over
-            this.state = State.CONNECT;
-          }
-          else {
-            this.emit('error', new Error('Invalid ping request'));
-          }
-        }
-        break;
-      default:
-        {
-          const err = new Error('Unexpected ping packet');
-          this.emit('error', err);
-        }
-        break;
-    }
-  }
-
-  sendReject(rejectCode, message, cb) {
-    let bufAllocLen = this.peer.publicKey ? length.REJECT_ENCRYPT : length.REJECT_DECRYPT;
-
-    const difference = this.effmtu - bufAllocLen;
-
-    /* Determine how much of the string can be sent. */
-    let messageByteLen = 0;
-    if (message) {
-      messageByteLen = Buffer.byteLength(message, 'utf8');
-      while (messageByteLen > difference) {
-        if (message.length > difference) {
-          message = message.slice(0, difference);
-        }
-        else {
-          message = message.slice(0, message.length/2);
-        }
-        messageByteLen = Buffer.byteLength(message, 'utf8');
-      }
-    }
-
-    bufAllocLen += messageByteLen;
-
-    const buf = Buffer.allocUnsafe(bufAllocLen);
-
-    let len = mkPrefix(buf, !!this.peer.publicKey, control.REJECT, 0, this.sequence);
-
-    if (!len) {
-      return false;
-    }
-
-    let bufTmp = null;
-    if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(length.REJECT_DATA + messageByteLen);
-    }
-    else {
-      bufTmp = buf.slice(length.PREFIX);
-    }
-
-    len = mkReject(bufTmp, this.timestamp, rejectCode, message);
-
-    if (!len) {
-      return false;
-    }
-
-    if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
-        return false;
-      }
-    }
-
-    this.sender.send(buf, cb);
-    return true;
-  }
-
-  sendChallenge(cb) {
-    const bufAllocLen = this.peer.publicKey ? length.CHALLENGE_DECRYPT : length.CHALLENGE_ENCRYPT;
-    const buf = Buffer.allocUnsafe(bufAllocLen);
-
-    let len = mkPrefix(buf, !!this.peer.publicKey, control.CHALLENGE, 0, this.sequence);
-
-    if (!len) {
-      return false;
-    }
-
-    let bufTmp = null;
-    if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(length.CHALLENGE_DATA);
-    }
-    else {
-      bufTmp = buf.slice(length.PREFIX);
-    }
-
-    let n = crypto.NO_NONCE;
-    let pk = crypto.NO_KEY;
-    if (this.encrypted) {
-      n = this.nonce;
-      pk = this.keys.publicKey;
-    }
-
-    len = mkChallenge(bufTmp, this.id, this.timestamp, version,
-      this.limits.currency, this.limits.streams,
-      this.limits.messages, n, pk);
-
-    if (!len) {
-      return false;
-    }
-
-    if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
-        return false;
-      }
-    }
-
-    this.sender.send(buf, cb);
-    return true;
-  }
-
-  sendAccept(cb) {
-    const bufAllocLen = this.peer.publicKey ? length.ACCEPT_DECRYPT : length.ACCEPT_ENCRYPT;
-    const buf = Buffer.allocUnsafe(bufAllocLen);
-
-    let len = mkPrefix(buf, !!this.peer.publicKey, control.ACCEPT, 0, this.sequence);
-
-    if (!len) {
-      return false;
-    }
-
-    let bufTmp = null;
-    if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(length.ACCEPT_DATA);
-    }
-    else {
-      bufTmp = buf.slice(length.PREFIX);
-    }
-
-    len = mkAccept(bufTmp, this.timestamp, this.peer.nonce);
-
-    if (!len) {
-      return false;
-    }
-
-    if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
-        return false;
-      }
-    }
-
-    this.sender.send(buf, cb);
-    return true;
-  }
-
-  sendPing(cb) {
-    const bufAllocLen = this.peer.publicKey ? length.PING_DECRYPT : length.PING_ENCRYPT;
-    const buf = Buffer.allocUnsafe(bufAllocLen);
-
-    let len = mkPrefix(buf, !!this.peer.publicKey, control.PING, 0, this.sequence);
-
-    if (!len) {
-      return false;
-    }
-
-    let bufTmp = null;
-    if (this.peer.publicKey) {
-      bufTmp = Buffer.allocUnsafe(length.PING_DATA);
-    }
-    else {
-      bufTmp = buf.slice(length.PREFIX);
-    }
-
-    if (!this.pingNonce) {
-      this.pingNonce = crypto.mkNonce(Buffer.allocUnsafe(length.NONCE));
-    }
-
-    len = mkPing(bufTmp, this.timestamp, this.rttMs, this.pingNonce);
-
-    if (!len) {
-      return false;
-    }
-
-    if (this.peer.publicKey) {
-      if (!crypto.seal(buf.slice(length.PREFIX), bufTmp, this.peer.publicKey)) {
-        return false;
-      }
-    }
-
-    this.sender.send(buf, cb);
-    return true;
-  }
-
   /**
    * Open this connection. The handshake process will begin.
    */
@@ -941,106 +752,68 @@ class Connection extends EventEmitter {
   }
 
   /**
-   * Parse and process a packet.
+   * Close this connection. Peer and streams will be notified.
    */
-  packet() {
-    // TODO
-  }
-
-  reject() {
-    this.sendReject(reject.USER);
-  }
-
-  challenge() {
-    switch (this.state) {
-      case State.CREATE:
-      case State.CHALLENGE:
-        {
-          this.state = State.CHALLENGE;
-          this.emit('challenge');
-
-          this.startChallenge();
-        }
-        break;
-      default:
-        {
-          this.emit('error', new Error('Unexpected challenge call'));
-        }
-        break;
-    }
-  }
-
-  startChallenge() {
-    function challengeCycle(conn, counter, timeout) {
-      if (conn.state === State.CHALLENGE) {
-        counter++;
-
-        if (counter === 3) {
-          // TODO set timeout to cleanup connection object
-        }
-        else {
-          if (conn.sendChallenge()) {
-            conn.timeoutChallengeHandle = setTimeout(challengeCycle, timeout, conn, counter, timeout);
-          }
-          else {
-            conn.emit('error', new Error('Unable to create/send open message'));
-            clearTimeout(conn.timeoutChallengeHandle);
-            // TODO clear connection object?
-          }
-        }
-      }
-      else {
-        clearTimeout(conn.timeoutChallengeHandle);
-      }
-    }
-
-    challengeCycle(this, 0, this.rttMs);
-  }
-
-  accept() {
-    switch (this.state) {
-      case State.OPEN:
-        {
-          this.state = State.ACCEPT;
-          this.emit('accept');
-          this.sendAccept();
-        }
-        break;
-      default:
-        {
-          this.emit('error', new Error('Unexpected challenge call'));
-        }
-        break;
-    }
-  }
-
-  stop() {
-    // Start disconnect process.
-  }
-
   close() {
-    switch (this.state) {
-      case State.CREATE:
-        this.cleanup();
-        break;
-      case State.OPEN:
-        this.cleanup();
-        break;
-      default:
-        {
-          this.emit('error', new Error('Unexpected close call'));
-        }
-        break;
-    }
+    this._transition(Event.NOTIFY);
   }
 
-  cleanup() {
-    this.state = State.END;
-    this.emit('close');
-    this.streams = null;
-    this.keys = null;
-    this.nonce = null;
-    this.timestamp = null;
+  /**
+   * Kill the connection. The connection object will be kept for a time.
+   */
+  kill() {
+    this._transition(Event.KILL);
+  }
+
+  /**
+   * Update the sender. Useful if you are using DDNS.
+   */
+  setSender(sender) {
+    this._sender = sender;
+  }
+
+  /**
+   * Handle open message data. Unpacked by router.
+   */
+  handleOpen(pre, open) {
+    if (!this._checkSequence(pre.seq)) {
+      /* Sequence already seen. May be a replay attack. */
+      return;
+    }
+    this._transition(Event.OPEN_RECV, open);
+    this._flagSequence(pre.seq);
+  }
+
+  /**
+   * Handle the incoming raw data.
+   */
+  handleSegment(pre, seg) {
+    if (!this._checkSequence(pre.seq)) {
+      /* Sequence already seen. May be a replay attack. */
+      return;
+    }
+
+    switch (pre.control) {
+      case control.CHALLENGE:
+        {
+          let data = this.unChallenge(
+            seg.slice(),
+            this._selfKeys.publicKey,
+            this._selfKeys.secretKey
+          );
+          if (!data) {
+            /* Invalid payload/decryption. */
+            return;
+          }
+          this._transition(Event.CHALLENGE_RECV, data);
+        }
+        break;
+      default:
+        crit('Unimplemented segment.');
+        break;
+    }
+
+    this._flagSequence(pre.seq);
   }
 }
 
