@@ -9,10 +9,10 @@ const { Enum } = require('enumify');
 /* Custom */
 const { mkConnection } = require('./connection.js');
 const crypto = require('./crypto.js');
-const { debug, trace, crit } = require('./log.js');
+const { trace, debug, warn, crit } = require('./log.js');
 const p = require('./protocol.js');
 const { SocketInterface } = require('./socket.js');
-const { control, length, offset, reject, version } = p;
+const { control, length, reject, version } = p;
 'use strict';
 
 
@@ -109,10 +109,10 @@ State.initEnum({
       this.emit('listen');
     },
     
-    transition(e, eData) {
+    transition(e, data) {
       switch (e) {
         case Event.SOCKET_MESSAGE:
-          this._processMessage(eData.message, eData.rinfo);
+          this._processSegment(data.message, data.rinfo);
           return State.LISTEN;
         case Event.SOCKET_CLOSE:
           this.emit('error', new Error('SOCKET_CLOSE received before STOP.'));
@@ -139,11 +139,11 @@ State.initEnum({
       this._signalStop();
     },
 
-    transition(e, eData) {
+    transition(e, data) {
       switch (e) {
         case Event.SOCKET_MESSAGE:
           /* Expected path. */
-          this._processMessage(eData.message, eData.rinfo);
+          this._processSegment(data.message, data.rinfo);
           return State.STOP_NOTIFY;
         case Event.SOCKET_CLOSE:
           /* Expected path. */
@@ -503,125 +503,82 @@ class Router extends EventEmitter {
   }
 
   /**
+   * Send the reject message.
+   * Don't allow reflection attacks.
+   * Don't flag any source for very long.
+   * @private
+   */
+  _reject(key, rinfo, code) {
+    //TODO
+  }
+
+  /**
    * Process the message and return information.
    * @private
-   * TODO rename _processPacket unless convention for this protocol is changed
-   * TODO TCP uses segment... maybe _processSegment?? then name buffer 'seg'?
-   * TODO naming must match PROTOCOL.md specifications
    */
-  _processMessage(msg, rinfo) {
+  _processSegment(seg, rinfo) {
     trace();
 
-    debug('rinfo:', String(rinfo));
+    debug('rinfo:', rinfo);
     const sourceKey = this._socket.mkKey(rinfo);
+    debug('source key:', sourceKey);
 
     if (this._isReported(sourceKey)) {
       /* We just drop the packet. This is not an error to report. */
-      //this.emit('error', new Error('Packet source was previously reported: ' + String(rinfo)));
       return;
     }
 
     // First, check the length
-    const len = msg.length;
+    const len = seg.length;
     if (len < length.PACKET_MIN) {
       /* We cannot accurately determine the source. Drop packet. */
-      //this._report(rinfo);
-      //this.emit('error', new Error('Invalid packet length: ' + String(len)));
+      this._reject(sourceKey, rinfo, reject.MALFORMED);
       return;
     }
 
     /* Unpack prefix. */
-    const pre = p.unPrefix(msg);
+    const pre = p.unPrefix(seg);
 
     debug('Prefix:', pre);
 
-    // TODO update control numbers and the following line
-    if (pre.control > control.PING) {
+    if (pre.control > control.MAX) {
       /* We cannot accurately determine the source. Drop packet. */
+      warn('Unknown packet type:', pre, rinfo);
+      this._reject(sourceKey, rinfo, reject.MALFORMED);
       return;
     }
 
-    // Second, check that the control character and specific length are correct
-    let isValid = false;
-    // TODO create isSafe variable to give better reject codes
-    switch (pre.control) {
-      case control.STREAM:
-        if ((encrypted && len >= length.STREAM_ENCRYPT)
-            || (!encrypted && len >= length.STREAM_DECRYPT)
-            && id
-            && (encrypted || this._allowUnsafePacket))
-        {
-          isValid = true;
-        }
-        break;
-      case control.OPEN:
-        /*
-        if (((encrypted && len === length.OPEN_ENCRYPT)
-            || (!encrypted && len === length.OPEN_DECRYPT))
-        */
-        if (true
-            && !pre.id
-            && this._allowIncoming
-            && (pre.encrypted || this._allowUnsafeOpen))
-        {
-          debug('Hurray. Valid.');
-          isValid = true;
-        }
-        break;
-      case control.REJECT:
-        if (((encrypted && len === length.REJECT_ENCRYPT)
-            || (!encrypted && len === length.REJECT_DECRYPT))
-            && id
-            && (encrypted || this._allowUnsafePacket))
-        {
-          isValid = true;
-        }
-        break;
-      case control.CHALLENGE:
-        if (((encrypted && len === length.CHALLENGE_ENCRYPT)
-            || (!encrypted && len === length.CHALLENGE_DECRYPT))
-            && id
-            && (encrypted || this._allowUnsafePacket))
-        {
-          isValid = true;
-        }
-        break;
-      case control.ACCEPT:
-        if (((encrypted && len === length.ACCEPT_ENCRYPT)
-            || (!encrypted && len === length.ACCEPT_DECRYPT))
-            && id
-            && this._allowIncoming
-            && (encrypted || this._allowUnsafePacket))
-        {
-          isValid = true;
-        }
-        break;
-      default:
-        break;
-    }
-
-    if (!isValid) {
-      /* If the packet isn't valid we drop. We still cannot confirm sender. */
-      //this._report(rinfo);
-      //this.emit('error', new Error('Invalid packet type from: ' + JSON.stringify(rinfo)));
-      return;
-    }
-
+    /* OPEN packets must be unpacked by the router. */
     if (pre.control === control.OPEN) {
+      if (!this._allowIncoming) {
+        /* Only outgoing connections allowed. */
+        this._reject(sourceKey, rinfo, reject.INCOMING);
+        return;
+      }
+
+      if (!pre.encrypted && !this._allowUnsafeOpen)
+      {
+        /* Ugh. Not encrypted. */
+        warn('Not encrypted:', rinfo);
+        this._reject(sourceKey, rinfo, reject.UNSAFE);
+        return;
+      }
+
       debug('OPEN unpacking now.');
-      const open = p.unOpen(msg, this._openKeys.publicKey, this._openKeys.secretKey);
+      const open = p.unOpen(seg, this._openKeys.publicKey, this._openKeys.secretKey);
 
       if (!open) {
         crit('Whycome no open???');
         /* Again. Still not enough information to report. Dropping packet. */
+        this._reject(sourceKey, rinfo, reject.KEY);
         return;
       }
 
-      debug(open.version);
+      debug('OPEN data: ', open);
+
       if (open.version !== version) {
         /* No way to verify sender. Reject with caution. */
-        // TODO reject once and temporarily record
-        //this._reject(msg, rinfo, reject.VERSION);
+        this._reject(sourceKey, rinfo, reject.VERSION);
         return;
       }
 
@@ -629,22 +586,20 @@ class Router extends EventEmitter {
       if (!connection) {
         if (!this._screenCb(open.route, rinfo)) {
           /* Cannot verify sender. Reject with caution. */
-          // TODO need a feature in report to indicate reject message or not, to prevent reflection attacks
-          //this._report(sourceKey);
-          //this._reject(msg, rinfo, reject.USER);
+          this._reject(sourceKey, rinfo, reject.USER);
           return;
         }
 
         const newId = this._newId();
         if (!newId) {
           /* Cannot verify sender. Reject with caution. */
-          this._reject(msg, rinfo, reject.BUSY);
+          this._reject(sourceKey, rinfo, reject.BUSY);
           return;
         }
 
         connection = mkConnection(newId, this._socket.mkSender(rinfo));
         if (!connection) {
-          // TODO what to do??? is this a possibility?
+          this._reject(sourceKey, rinfo, reject.SERVER);
           return;
         }
 
@@ -652,24 +607,26 @@ class Router extends EventEmitter {
         this._setAddress(sourceKey, connection);
       }
 
-      connection.handleOpen(open);
+      connection.handleOpen(pre, open);
     }
     else {
+      /* Everything else gets routed to the connection. */
+      if (!pre.encrypted && !this._allowUnsafePacket)
+      {
+        /* Ugh. Not encrypted. */
+        warn('Not encrypted:', pre, rinfo);
+        this._reject(sourceKey, rinfo, reject.UNSAFE);
+        return;
+      }
+
+
       const connection = pre.id ? this._getId(pre.id) : null;
       if (connection) {
-        // TODO
-        const buf = connection.firewall();
-        if (buf) {
-          connection.packet();
-        }
-        else {
-          this._report(sourceKey);
-          this.emit('error', new Error('Packet failed the firewall: ' + String(rinfo)));
-        }
+        connection.handlePacket(seg);
       }
       else {
         /* Unverified sender. Reject with caution. */
-        //this._report(sourceKey);
+        this._reject(sourceKey, rinfo, reject.ID);
         return;
       }
     }
@@ -892,9 +849,7 @@ class Router extends EventEmitter {
   /**
    * Attempts to create a new connection over the socket.
    * @param {Object} dest - Required. The destination description. May vary depending on socket type.
-   * @param {Object} options - Optional.
-   * @param {keys} options.keys - TODO.
-   * @param {boolean} [options.allowUnsafePacket=false] - Allow unsafe communications.
+   * @param {Object} options - Optional. See mkConnection documentation.
    * @return A promise that will either return a connection or an error.
    */
   mkConnection(dest, options) {
