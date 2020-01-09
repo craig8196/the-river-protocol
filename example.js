@@ -79,7 +79,8 @@ server.on('listen', () => {
 
 // Screen incoming OPEN requests. Accept all for testing.
 server.screen((binary, address) => {
-  info('Screening: ' + binary.toString('hex') + '/' + String(address));
+  info('Screening data: ', binary.toString('hex'));
+  info('Screening address: ', address);
   return true;
 });
 
