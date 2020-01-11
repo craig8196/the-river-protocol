@@ -137,6 +137,9 @@ function unseal(message, emessage, publicKey, secretKey) {
 const NO_NONCE = Buffer.allocUnsafeSlow(NONCE_BYTES).fill(0);
 const NO_KEY = Buffer.allocUnsafeSlow(PUBLIC_KEY_BYTES).fill(0);
 
+
+// TODO yeah, probably should use crypto_sign for this task...
+// crypto_sign_detached...
 const HLEN = sodium.crypto_generichash_BYTES_MIN;
 const KLEN = sodium.crypto_generichash_KEYBYTES_MIN;
 const HASH_BYTES = HLEN + KLEN;
