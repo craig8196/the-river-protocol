@@ -50,9 +50,7 @@ State.initEnum({
         case Event.START:
           return State.BIND;
         default:
-          {
-            this.emit('error', new Error('Expecting START event. Found: ' + String(e.name)));
-          }
+          this.emit('error', new Error('Expecting START event. Found: ' + String(e.name)));
           break;
       }
       return this._state;
@@ -258,10 +256,10 @@ State.initEnum({
  *
  * Duties:
  * Store socket, conns, and state.
- * Route packets to the correct connection.
+ * Route segments to the correct connection.
  * Limit number of connections.
  * Basic protection of denial-of-service.
- * Perform basic packet rejection linting:
+ * Perform basic segment rejection linting:
  * - Bad length
  * - Bad control
  * - Bad encryption
@@ -290,7 +288,7 @@ class Router extends EventEmitter {
     this._allowIncoming = options.allowIncoming;
     this._allowOutgoing = options.allowOutgoing;
     this._allowUnsafeOpen = options.allowUnsafeOpen;
-    this._allowUnsafePacket = options.allowUnsafePacket;
+    this._allowUnsafeSegment = options.allowUnsafeSegment;
 
     this._bindTimeoutMs = 1000;
     this._closeTimeoutMs = 1000;
@@ -356,7 +354,7 @@ class Router extends EventEmitter {
     }
 
     /**
-     * Pass packets along.
+     * Pass segments along.
      */
     function handleMessage(message, rinfo) {
       trace();
@@ -508,7 +506,7 @@ class Router extends EventEmitter {
    * Don't flag any source for very long.
    * @private
    */
-  _reject(key, rinfo, code) {
+  _reject(/*key, rinfo, code*/) {
     //TODO
   }
 
@@ -524,14 +522,14 @@ class Router extends EventEmitter {
     debug('source key:', sourceKey);
 
     if (this._isReported(sourceKey)) {
-      /* We just drop the packet. This is not an error to report. */
+      /* We just drop the segment. This is not an error to report. */
       return;
     }
 
     // First, check the length
     const len = seg.length;
-    if (len < length.PACKET_MIN) {
-      /* We cannot accurately determine the source. Drop packet. */
+    if (len < length.SEGMENT_MIN) {
+      /* We cannot accurately determine the source. Drop segment. */
       this._reject(sourceKey, rinfo, reject.MALFORMED);
       return;
     }
@@ -542,13 +540,13 @@ class Router extends EventEmitter {
     debug('Prefix:', pre);
 
     if (pre.control > control.MAX) {
-      /* We cannot accurately determine the source. Drop packet. */
-      warn('Unknown packet type:', pre, rinfo);
+      /* We cannot accurately determine the source. Drop segment. */
+      warn('Unknown segment type:', pre, rinfo);
       this._reject(sourceKey, rinfo, reject.MALFORMED);
       return;
     }
 
-    /* OPEN packets must be unpacked by the router. */
+    /* OPEN segments must be unpacked by the router. */
     if (pre.control === control.OPEN) {
       if (!this._allowIncoming) {
         /* Only outgoing connections allowed. */
@@ -556,8 +554,7 @@ class Router extends EventEmitter {
         return;
       }
 
-      if (!pre.encrypted && !this._allowUnsafeOpen)
-      {
+      if (!pre.encrypted && !this._allowUnsafeOpen) {
         /* Ugh. Not encrypted. */
         warn('Not encrypted:', rinfo);
         this._reject(sourceKey, rinfo, reject.UNSAFE);
@@ -569,7 +566,7 @@ class Router extends EventEmitter {
 
       if (!open) {
         crit('Whycome no open???');
-        /* Again. Still not enough information to report. Dropping packet. */
+        /* Again. Still not enough information to report. Dropping segment. */
         this._reject(sourceKey, rinfo, reject.KEY);
         return;
       }
@@ -611,8 +608,7 @@ class Router extends EventEmitter {
     }
     else {
       /* Everything else gets routed to the connection. */
-      if (!pre.encrypted && !this._allowUnsafePacket)
-      {
+      if (!pre.encrypted && !this._allowUnsafeSegment) {
         /* Ugh. Not encrypted. */
         warn('Not encrypted:', pre, rinfo);
         this._reject(sourceKey, rinfo, reject.UNSAFE);
@@ -622,7 +618,7 @@ class Router extends EventEmitter {
 
       const connection = pre.id ? this._getId(pre.id) : null;
       if (connection) {
-        connection.handlePacket(seg);
+        connection.handleSegment(pre, seg);
       }
       else {
         /* Unverified sender. Reject with caution. */
@@ -861,8 +857,8 @@ class Router extends EventEmitter {
       options = {};
     }
 
-    options.allowUnsafePacket =
-      'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
+    options.allowUnsafeSegment =
+      'allowUnsafeSegment' in options ? (!!options.allowUnsafeSegment) : false;
 
     const promise = new Promise((resolve, reject) => {
       setTimeout(() => {
@@ -927,7 +923,7 @@ class Router extends EventEmitter {
  * @param {boolean} [options.allowIncoming=false] - Allow incoming connections.
  * @param {boolean} [options.allowOutgoing=false] - Allow outgoing connections.
  * @param {boolean} [options.allowUnsafeOpen=false] - Allow unencrypted OPEN requests.
- * @param {boolean} [options.allowUnsafePacket=false] - Allow all traffic to be unencrypted.
+ * @param {boolean} [options.allowUnsafeSegment=false] - Allow all traffic to be unencrypted.
  * @return {Router}
  */
 function mkRouter(socket, options) {
@@ -954,8 +950,8 @@ function mkRouter(socket, options) {
     'allowOutgoing' in options ? (!!options.allowOutgoing) : false;
   options.allowUnsafeOpen =
     'allowUnsafeOpen' in options ? (!!options.allowUnsafeOpen) : false;
-  options.allowUnsafePacket =
-    'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
+  options.allowUnsafeSegment =
+    'allowUnsafeSegment' in options ? (!!options.allowUnsafeSegment) : false;
 
   if (!options.openKeys && !options.allowUnsafeOpen) {
     options.openKeys = crypto.mkKeyPair();
