@@ -18,9 +18,10 @@ The details. Onwaaaard!
 **fragment:** Part of a message.  
 **client:** The peer seeking to OPEN a connection.  
 **server:** The peer receiving the OPEN request.  
-**peer**: The other end of the connection.
-**disconnect**: Soft disconnect with proper notification.  
-**kill**: Hard disconnect without any notification.  
+**peer:** The other end of the connection.
+**notify:** Notification to disconnect.
+**disconnect:** Disconnect without any further waiting.  
+**kill:** Hard disconnect without sending anything further.
 
 
 ## Overview
@@ -196,7 +197,7 @@ Rejection types are:
 7 - Server error
 
 
-### Open
+### OPEN
 If the address+port are already in use then reject as potentially malicious,
 let a timeout cleanup the entry.
 Otherwise, create a temporary entry for the client.
@@ -212,14 +213,14 @@ connection is significantly less than the current time, then we're experiencing
 packet replay and they should be dropped without a second thought.
 The Version ID is listed outside the encrypted data so the correct encryption
 scheme can be used.
-Use xchacha20poly1305 AEAD construction.
+TODO add SIGNATURE
+TODO remove encrypted OPEN feature??? Signatures should be valid enough, right?
 
 | Octets | Field |
 |:------ |:----- |
 | PRE | PREFIX
 | 2 | Major Version ID
 | VD | Routing Information (Binary)
-| 48 | Encrypt
 | OPENING INFO |
 
 
@@ -227,16 +228,24 @@ Use xchacha20poly1305 AEAD construction.
 Challenge the OPEN request.
 Return the server's nonce and public key for the connection.
 Same format as OPEN.
-If the OPENING INFO has different keys on resubmissions then it is considered mailicious and the connection is terminated.
+If the OPENING INFO has different keys on resubmissions then it is considered malicious and the connection is terminated.
+TODO add SIGNATURE
 
 | Octets | Field |
 |:------ |:----- |
 | PRE | PREFIX
-| 48 | Encrypt
 | OPENING INFO |
 
 
 ### OPENING INFO
+SECURITY: The signature of the OPEN segment is zero for public servers.
+SECURITY: The signature of the OPEN segment MUST sign entire packet for private servers.
+SECURITY: The signature of the CHALLENGE segment SHOULD be checked.
+SECURITY: The signature of the CHALLENGE segment MUST also sign the OPEN segment.
+SECURITY: The signature of the CHALLENGE segment MUST be done for public servers.
+| Octets | Field |
+|:------ |:----- |
+| 48 | Encrypt Padding
 | 4 | Receiver ID for future responses/requests
 | 8 | Timestamp
 | 24 | Nonce client (Zeroes if unencrypted)
@@ -245,12 +254,14 @@ If the OPENING INFO has different keys on resubmissions then it is considered ma
 | 2 | Sender Currency Rate
 | 2 | Sender Max Streams
 | 4 | Sender Max Message
+| S | SIGNATURE (OUTSIDE ENCRYPTION) |
 
 TODO should this be a part of it???
 | 1 | Allowed stream types, cannot be zero.
 
 
 ### Forward
+TODO should this be re-labeled "redirect"??
 Forwarding instructions.
 Should only be used with encryption.
 | Octets | Field |
@@ -266,6 +277,7 @@ TODO.
 
 ### Response
 TODO should a ping just be returned and make pinging the connector's responsibility???
+TODO currently proceeding to use PING as the response and see if any issues arrive.
 Accept the server's CHALLENGE request.
 If the client does not respond with this then the connection is closed.
 The client cannot have lower limitations than the server.
@@ -294,8 +306,7 @@ If valid reject found, then terminate connection.
 |:------ |:----- |
 | PRE | PREFIX
 | 16 | Encrypt
-| 24 | Random 1
-| 24 | Random 2
+| 24 | Random
 | 8 | Timestamp
 | 4 | RTT
 | 4 | Sent Count
@@ -472,65 +483,118 @@ Note that default limits are set to be reasonable values for modern clients/serv
 
 
 ## Attack Mitigation
-Here we outline attack vectors and how they are overcome or mitigated.
-TODO - add additional details and analysis.
-TODO - additional research on other attacks.
+Address how TRiP handles known attacks.
 
 
-### Encryption
-Applying new methods of encryption and incrementing the version counter.
-Software will need to be updated upon updating encryption methods.
-Attacks can proceed against outdated software.
-Rejecting incorrect version numbers outright can prevent issues.
-Rejecting incorrect version numbers can signal that one or both parties must update.
-If a single encryption method breaks there is likely no other mitigation method.
-
-
-### DDoS
-No known server-side solution.
-ISP, Firewall, and intermediate network devices may have ways of mitigating.
-Incoming traffic can be increasingly dropped and only previously established connections can be handled.
-
-
-### DDoS Amplification
+### Encryption Attack
 **Problem:**
-Creating IP packets with the return IP address and port set to the network to DDoS.
+Current encryption methods are found to be vulnerable or broken.
+**Solution:**
+Use another method of encryption.
+Update software.
+**TRiP:**
+Apply new methods of encryption and incrementing the version counter.
+Software will need to be updated.
+Attacks can proceed against outdated software.
+Reject incorrect version numbers to help prevent exposing the vulnerability.
+Reject incorrect version numbers to signal that a party must update.
+
+
+### DDoS Attack
+**Problem:**
+Sending too many packets
+**Solution:**
+No known server-side solution.
+Mitigated through ISP, Firewall, or intermediate network devices.
+**TRiP:**
+Rate limit OPEN connections.
+Encrypted communications helps drop erroneous segments.
+
+
+### DDoS Reflection/Amplification Attack
+**Problem:**
+Create IP packets with the return IP address and port set to the network to DDoS.
+Amplified if the response is larger than the request.
 **Solution:**
 No known perfect solution.
+Mitigated by having smaller responses than the request.
 **TRiP:**
-Fixed by first having known public key that is kept secret for OPEN connection.
+Mitigated by having known public key for OPEN connection.
 Nature of encryption-by-default should help mitigate.
-Size of OPEN packet is as large as CHALLENGE, so amplification isn't a large issue.
-Additionally we can suppress reject messages for malformed OPEN messages.
-No perfect fix for public servers with unencryped OPEN or known public key.
-Mitigated by limiting OPEN packets.
+Size of OPEN packet is larger than CHALLENGE, so it won't amplify.
+Rate limiting REJECT segments.
 Temporarily tracking "sender" can reduce reject messages or OPEN accepts.
+No perfect fix for public servers with unencrypted OPEN.
+Mitigated by encrypting communication; if decryption fails the segment is dropped.
 
 
 ### Packet Replay
-Sequences, nonce, control, timestamps.
-Only OPEN messages can be replayed and with no damage or success.
+**Problem:**
+Packet is captured and resent potentially multiple times.
+**Solution:**
+Mitigated with sequence numbers and timestamps.
+Encryption can ensure that tampering cannot occur, but does not prevent replay.
+**TRiP:**
+Use a combination of control, sequences, timestamps, encryption, nonces.
+OPEN messages can be replayed with no damage or success.
+If a connection is already OPENed then the packet is dropped.
+
+If an encrypted STREAM packet is replayed after a stream is closed, data
+could be injected if that packet didn't originally arrive at the destination.
+Old information would get injected to a newly created stream.
+Shrinking the sequence window upon a stream will mitigate this scenario.
+The sequence window must be shrunken to the last sequence number given to the stream.
+
+Replay a previously unreceived PING packet in a low-flow application could be an issue.
+Timestamps are sent with each PING.
+The response PING replies with the same timestamp.
+PINGs with mismatched timestamps should be discarded as an attempt at packet replay.
 
 
 ### Man-in-the-Middle
+**Problem:**
+Intercept communications, effectively controlling what is sent.
+**Solution:**
 No known perfect solution.
-Fixed by using public key known in advance for OPEN connection.
-
-
-### Man-in-the-Middle Through Packet Injection
-While this is tricky and unlikely due to timing there are ways of mitigating.
-Fixed by using public key known in advance for OPEN connection.
-Mitigated by timing.
-Routing, version tampering is fixed by encrypting a hash of them.
-Tampering with the sequence, control, or ID just results in bad message
-for encrypted connections.
-Unencrypted connections are prone to issues with tampering currently.
+No solution to flow control, packet corruption, or packet injection.
+Mitigate packet source validation with encryption and signatures.
+Mitigate spoofing of packets with encryption.
+**TRiP:**
+Signatures used in OPEN handshake.
+Encrypted OPEN to prevent spoofing.
+Validity of connection maintained with continued encryption.
+Mitigate with signatures.
 
 
 ### Packet Injection
-Disrupting services through IP/UDP packet fabrication.
-Servers drop malformed packets.
-Rejects are rate limited.
-Established connections using encryption are not prone to any know issues.
+**Problem:**
+IP/UDP allows any source address and port to be set.
+Servers reading the packets will believe they were sent from the specified source address.
+Clients may connect to incorrect servers.
+**Solution:**
+No known solution.
+Mitigated by difficulty of timing.
+Mitigated with encryption and signatures.
+**TRiP:**
+No mitigation when signatures and encryption are not used.
+Drop packets that don't make sense.
+Rate limit reject messages.
+Ignore unsigned REJECT messages.
+Ignore unsigned CHALLENGE messages.
+Ignore unsigned FORWARD messages if using unencrypted OPEN.
+Disallow changing destination IP:PORT during OPEN handshake.
+Established connections use encryption.
+OPEN message can be encrypted.
 
+Even when using encrypted OPEN segments there is a possibility of connecting to the wrong server
+if the attacker has the OPEN key.
+Let's assume the server can redirect or connect you to a different server using
+FORWARD or acting as a proxy.
+If the attacker knows the OPEN key,
+then they can forge a packet with different routing information.
+The server will be able to decrypt, and sign a different FORWARD or CHALLENGE packet.
+If the CHALLENGE packet is accepted by the client,
+then they are connected to the incorrect server.
+This does rely on chance or the ability to block packets.
+Will prevent by signing at least the route in the OPEN request.
 
