@@ -1,10 +1,6 @@
 /**
  * @file Connection management code.
  * @author Craig Jacobson
- *
- * TODO use allocUnsafeSlow for longer lived values
- * TODO move spec specific things to spec file
- * TODO rename spec.js to protocol.js???
  */
 /* Core */
 const EventEmitter = require('events');
@@ -12,7 +8,7 @@ const EventEmitter = require('events');
 const { Enum } = require('enumify');
 /* Custom */
 const crypto = require('./crypto.js');
-const { trace, info, warn, crit } = require('./log.js');
+const { trace, debug, info, warn, crit } = require('./log.js');
 const p = require('./protocol.js');
 const { SenderInterface } = require('./socket.js');
 const { version, timeout, length, limit, control/*, reject*/ } = p;
@@ -28,12 +24,24 @@ Event.initEnum([
   'CHALLENGE_RECV',
   'CHALLENGE_TIMEOUT',
   'CHALLENGE_ERROR',
-  'PING',
+  'FORWARD_RECV',
+  'PING_RECV',
   'PING_TIMEOUT',
   'PING_ERROR',
+  'PING_READY',
+  'PING_LATE',
+  'RENEW_RECV',
+  'RENEW_TIMEOUT',
+  'RENEW_ERROR',
   'STREAM_RECV',
   'REJECT_RECV',
-  'DISCONNECT',
+  'NOTIFY_RECV',
+  'NOTIFY_TIMEOUT',
+  'NOTIFY_ERROR',
+  'DISCONNECT_RECV',
+  'DISCONNECT_TIMEOUT',
+  'DISCONNECT_ERROR',
+  'KILL',
 ]);
 
 class State extends Enum {}
@@ -50,7 +58,7 @@ State.initEnum({
           this._setPeer(data);
           return State.CHALLENGE;
         default:
-          this.emit('error', new Error('Expected OPEN* events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected START events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -61,21 +69,22 @@ State.initEnum({
 
   'OPEN': {
     enter() {
-      if (!this._selfKeys && this._allowUnsafePacket) {
+      if (!this._selfKeys && this._allowUnsafeSegment) {
         this._selfKeys = crypto.mkKeyPair();
         this._selfNonce = crypto.mkNonce();
       }
       this._startOpenAlgorithm();
     },
 
-    transition(e) {
+    transition(e, data) {
       switch (e) {
         case Event.OPEN_TIMEOUT:
           return State.ERROR;
         case Event.CHALLENGE_RECV:
+          this._setPeer(data);
           return State.PING;
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected OPEN events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -92,16 +101,19 @@ State.initEnum({
 
     transition(e, data) {
       switch (e) {
-        case Event.PING:
-          this._setPeerPing(data);
-          this._sendPing();
-          return State.READY;
+        case Event.PING_RECV:
+          if (this._processPeerPing(data)) {
+            this._sendPing();
+            return State.READY;
+          }
+
+          return State.CHALLENGE;
         case Event.OPEN_RECV:
           /* Update the peer data incase peer changed certain parameters. */
           this._setPeer(data);
           return State.CHALLENGE;
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected CHALLENGE events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -113,15 +125,19 @@ State.initEnum({
 
   'PING': {
     enter() {
+      this._generatePingRand();
       this._startPingAlgorithm();
     },
 
-    transition(e) {
+    transition(e, data) {
       switch (e) {
-        case Event.PING:
-          return State.READY_PING;
+        case Event.PING_RECV:
+          if (this._processPeerPing(data)) {
+            return State.READY_PING;
+          }
+          return State.PING;
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected PING events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -133,12 +149,57 @@ State.initEnum({
 
   'READY': {
     enter() {
+      this._startReadyAlgorithm();
+    },
+
+    transition(e, data) {
+      switch (e) {
+        case Event.PING_RECV:
+          if (this._processPeerPing(data)) {
+            this._sendPing();
+            this._stopReadyAlgorithm();
+            this._startReadyAlgorithm();
+          }
+          return State.READY;
+        default:
+          this.emit('error', new Error('Expected READY events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+      this._stopReadyAlgorithm();
+    },
+  },
+
+  'READY_PING': {
+    enter() {
+      this._startReadyPingAlgorithm();
+    },
+
+    transition(e) {
+      switch (e) {
+        case Event.PING_READY:
+          return State.PING;
+        default:
+          this.emit('error', new Error('Expected READY_PING events. Found: ' + String(e.name)));
+          return State.ERROR;
+      }
+    },
+
+    exit() {
+      this._stopReadyPingAlgorithm();
+    },
+  },
+
+  'NOTIFY': {
+    enter() {
     },
 
     transition(e) {
       switch (e) {
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected NOTIFY events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -147,30 +208,14 @@ State.initEnum({
     },
   },
 
-  'DISCONNECT_SOFT': {
+  'DISCONNECT': {
     enter() {
     },
 
     transition(e) {
       switch (e) {
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
-          return State.ERROR;
-      }
-    },
-
-    exit() {
-    },
-  },
-
-  'DISCONNECT_HARD': {
-    enter() {
-    },
-
-    transition(e) {
-      switch (e) {
-        default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected DISCONNECT events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -186,7 +231,7 @@ State.initEnum({
     transition(e) {
       switch (e) {
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected DISCONNECT_ERROR events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -202,7 +247,7 @@ State.initEnum({
     transition(e) {
       switch (e) {
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected END events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -218,7 +263,7 @@ State.initEnum({
     transition(e) {
       switch (e) {
         default:
-          this.emit('error', new Error('Expected TODO events. Found: ' + String(e.name)));
+          this.emit('error', new Error('Expected ERROR events. Found: ' + String(e.name)));
           return State.ERROR;
       }
     },
@@ -263,28 +308,29 @@ class Connection extends EventEmitter {
     this.maxmtu = length.UDP_MTU_DATA_MAX;
 
     this.sequenceWindow = length.WINDOW;
-
-    this.rttTotal = timeouts.RTT;
-    this.rttCount = 1;
-
-    this._peerMinSeq = -1;
-    this._peerMidSeq = -1;
-    this._peerMaxSeq = -1;
     */
 
-    this._allowUnsafePacket = options.allowUnsafePacket;
-    this._openKey = options.openKey;
-    this._peerKey = null;
+    /* Router configuration. */
+    this._allowUnsafeSegment = options.allowUnsafeSegment;
+
+    /* Self variables. */
     this._selfKeys = options.keys;
-    this._peerNonce = null;
     this._selfNonce = options.nonce;
 
+    /* Peer variables. */
+    this._openKey = options.openKey;
+    this._peerKey = null;
+    this._peerNonce = null;
     // TODO implement bitmap
     this._peerSequenceMap = {};
+    this._peerSent = 0;
+    this._peerRecv = 0;
 
+    /* Estimated RTT. */
     this._rttMs = timeout.RTT;
 
     // TODO make sure these are checked on making
+    /* Self limits. */
     this._maxCurrency = limit.CURRENCY;
     this._regenCurrency = limit.CURRENCY_REGEN;
     this._maxStreams = limit.STREAMS;
@@ -295,12 +341,21 @@ class Connection extends EventEmitter {
 
     this._sequence = 0;
 
-    this._timestamp = p.mkTimeNow();
+    this._time = p.mkTimeNow();
+
+    /* Ping variables. */
+    this._isPinger = false;
+    this._pingRandom = null;
+    this._pingTime = null;
+
+    this._sentCount = 0;
+    this._recvCount = 0;
+
 
     // TODO determine better default timeout?
     this._openMaxTimeout = 60000; /* 1 minute */
     this._challengeMaxTimeout = 15000; /* 15 seconds */
-    this._pingMaxTimeout = 20000; /* 20 seconds */
+    this._pingMaxTimeout = 5000; /* TODO 20 seconds */
 
     this._internalState = State.START;
     this._internalState.enter();
@@ -361,19 +416,23 @@ class Connection extends EventEmitter {
   }
 
   /**
+   * Check that the sequence value is in range and not received yet.
    * @private
    */
   _checkSequence(seq) {
     trace();
 
+    /* TODO
     if (seq in this._peerSequenceMap) {
       return false;
     }
+    */
 
-    return true;
+    return seq >= 0;
   }
 
   /**
+   * Flag that a sequence number has been seen.
    * @private
    */
   _flagSequence(seq) {
@@ -395,7 +454,7 @@ class Connection extends EventEmitter {
     this._peerId = data.id;
     this._peerKey = data.key;
     this._peerNonce = data.nonce;
-    this._peerTimestamp = data.timestamp;
+    this._peerTime = data.time;
     this._peerVersion = data.version;
     this._peerMaxCurrency = data.maxCurrency;
     this._peerMaxStreams = data.maxStreams;
@@ -403,13 +462,47 @@ class Connection extends EventEmitter {
   }
 
   /**
-   * Set the peer data from a ping.
-   * @private
+   * Generate a new ping random ID value.
    */
-  _setPeerPing(/*data*/) {
+  _generatePingRand() {
     trace();
 
-    //TODO
+    this._pingRandom = crypto.mkNonce();
+    this._pingTime = p.mkTimeNow();
+  }
+
+  /**
+   * Set the peer data from a ping.
+   * @private
+   * @return True on success; false if bad ping.
+   */
+  _processPeerPing(data) {
+    trace();
+
+    if (this._isPinger) {
+      /* If we are pinging we send the random data. */
+      if (!data.time.equals(this._pingTime)) {
+        return false;
+      }
+
+      if (!data.random.equals(this._pingRandom)) {
+        return false;
+      }
+
+      this._peerSent = data.sent;
+      this._peerRecv = data.recv;
+
+      return true;
+    }
+    else {
+      /* If we are returning the ping we just copy the random data. */
+      this._pingRandom = data.random;
+      this._pingTime = data.time;
+      this._peerSent = data.sent;
+      this._peerRecv = data.recv;
+
+      return true;
+    }
   }
 
   /**
@@ -422,7 +515,7 @@ class Connection extends EventEmitter {
     const conn = this;
 
     function _retry(counter, timeoutMs, totalTimeMs) {
-      trace('Retry args [counter, timeoutMs, totalTimesMs', arguments);
+      trace('Retry args for', handleName, '[counter, timeoutMs, totalTimesMs', arguments);
 
       totalTimeMs += timeoutMs;
       if (totalTimeMs > maxTimeMs) {
@@ -588,6 +681,85 @@ class Connection extends EventEmitter {
   }
 
   /**
+   * Start the ready algorithm, which involves waiting for a ping.
+   * @private
+   */
+  _startReadyAlgorithm() {
+    trace();
+
+    const conn = this;
+    const handle = '_timeoutReadyHandle';
+
+    function actionCb() {
+      return true;
+    }
+
+    function timeoutCb() {
+      warn('READY, waiting on PING, timed out.');
+      conn._transition(Event.PING_LATE);
+    }
+
+    function errorCb() {
+      /* Not possible if actionCb always returns true. */
+      crit('Not possible to error out on ready algorithm.');
+    }
+
+    const rtt = this._pingMaxTimeout * 2;
+    const limit = this._pingMaxTimeout * 2;
+
+    this._startRetryAlgorithm(handle, actionCb, timeoutCb, errorCb, rtt, limit);
+  }
+
+  /**
+   * Stop the ready algorithm.
+   * @private
+   */
+  _stopReadyAlgorithm() {
+    trace();
+
+    this._stopRetryAlgorithm('_timeoutReadyHandle');
+  }
+
+  /**
+   * Start the ready ping algorithm.
+   * @private
+   */
+  _startReadyPingAlgorithm() {
+    trace();
+
+    const conn = this;
+    const handle = '_timeoutReadyPingHandle';
+
+    function actionCb() {
+      return true;
+    }
+
+    function timeoutCb() {
+      debug('READY PING timed out, time to send ping.');
+      conn._transition(Event.PING_READY);
+    }
+
+    function errorCb() {
+      crit('Not possible to error out on ready ping algorithm.');
+    }
+
+    const rtt = this._pingMaxTimeout;
+    const limit = this._pingMaxTimeout - 1;
+
+    this._startRetryAlgorithm(handle, actionCb, timeoutCb, errorCb, rtt, limit);
+  }
+
+  /**
+   * Stop the ready ping algorithm.
+   * @private
+   */
+  _stopReadyPingAlgorithm() {
+    trace();
+
+    this._stopRetryAlgorithm('_timeoutReadyPingHandle');
+  }
+
+  /**
    * Send any data.
    * @private
    */
@@ -596,7 +768,7 @@ class Connection extends EventEmitter {
   }
 
   /**
-   * Create and send the open packet.
+   * Create and send the open segment.
    * @private
    */
   _sendOpen() {
@@ -607,7 +779,7 @@ class Connection extends EventEmitter {
       version,
       null,
       this._id,
-      this._timestamp,
+      this._time,
       this._selfNonce,
       this._selfKeys.publicKey,
       this._maxCurrency,
@@ -617,6 +789,7 @@ class Connection extends EventEmitter {
     );
 
     if (!buf) {
+      crit('Failed to make OPEN!');
       return false;
     }
 
@@ -626,7 +799,7 @@ class Connection extends EventEmitter {
   }
 
   /**
-   * Create and send the challenge packet.
+   * Create and send the challenge segment.
    * @private.
    */
   _sendChallenge() {
@@ -637,7 +810,7 @@ class Connection extends EventEmitter {
       this._sequence,
       this._peerKey,
       this._id,
-      this._timestamp,
+      this._time,
       this._selfNonce,
       this._selfKeys.publicKey,
       this._maxCurrency,
@@ -647,6 +820,7 @@ class Connection extends EventEmitter {
     );
 
     if (!buf) {
+      crit('Failed to make CHALLENGE!');
       return false;
     }
 
@@ -663,10 +837,20 @@ class Connection extends EventEmitter {
     trace();
 
     const buf = p.mkPing(
-      //TODO
+      this._peerId,
+      this._sequence,
+      this._selfNonce,
+      this._peerKey,
+      this._selfKeys.secretKey,
+      this._pingRandom,
+      this._pingTime,
+      this._rttMs,
+      this._sentCount,
+      this._recvCount,
     );
 
     if (!buf) {
+      crit('Failed to make PING!');
       return false;
     }
 
@@ -748,6 +932,7 @@ class Connection extends EventEmitter {
    * Open this connection. The handshake process will begin.
    */
   open() {
+    this._isPinger = true;
     this._transition(Event.OPEN);
   }
 
@@ -776,6 +961,8 @@ class Connection extends EventEmitter {
    * Handle open message data. Unpacked by router.
    */
   handleOpen(pre, open) {
+    trace();
+
     if (!this._checkSequence(pre.seq)) {
       /* Sequence already seen. May be a replay attack. */
       return;
@@ -788,6 +975,8 @@ class Connection extends EventEmitter {
    * Handle the incoming raw data.
    */
   handleSegment(pre, seg) {
+    trace();
+
     if (!this._checkSequence(pre.seq)) {
       /* Sequence already seen. May be a replay attack. */
       return;
@@ -796,20 +985,43 @@ class Connection extends EventEmitter {
     switch (pre.control) {
       case control.CHALLENGE:
         {
-          let data = this.unChallenge(
-            seg.slice(),
+          let data = p.unChallenge(
+            seg,
             this._selfKeys.publicKey,
             this._selfKeys.secretKey
           );
+
+          debug('CHALLENGE data:', data);
+
           if (!data) {
             /* Invalid payload/decryption. */
             return;
           }
+
           this._transition(Event.CHALLENGE_RECV, data);
         }
         break;
+      case control.PING:
+        {
+          let data = p.unPing(
+            seg,
+            this._peerNonce,
+            this._peerKey,
+            this._selfKeys.secretKey,
+          );
+
+          debug('PING data:', data);
+
+          if (!data) {
+            /* Invalid payload/decryption. */
+            return;
+          }
+
+          this._transition(Event.PING_RECV, data);
+        }
+        break;
       default:
-        crit('Unimplemented segment.');
+        crit('Unimplemented segment:', pre);
         break;
     }
 
@@ -823,7 +1035,7 @@ class Connection extends EventEmitter {
  * @param {SenderInterface} sender - Required. Valid socket sender type.
  * @param {object} [options] - Options object.
  * @param {Buffer} [options.openKey] - Valid binary key.
- * @param {boolean} [options.allowUnsafePacket=false] - Allow unencrypted traffic.
+ * @param {boolean} [options.allowUnsafeSegment=false] - Allow unencrypted traffic.
  * @param {object} keys - Valid keys from crypto.
  * @param {Buffer} nonce - Valid nonce from crypto.
  * @return {Connection}
@@ -843,10 +1055,10 @@ function mkConnection(id, sender, options) {
 
   options.openKey =
     'openKey' in options ? options.openKey : null;
-  options.allowUnsafePacket =
-    'allowUnsafePacket' in options ? (!!options.allowUnsafePacket) : false;
+  options.allowUnsafeSegment =
+    'allowUnsafeSegment' in options ? (!!options.allowUnsafeSegment) : false;
 
-  if (!options.allowUnsafePacket) {
+  if (!options.allowUnsafeSegment) {
     options.keys = crypto.mkKeyPair();
     options.nonce = crypto.mkNonce();
   }

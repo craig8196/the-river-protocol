@@ -3,10 +3,8 @@
  * @author Craig Jacobson
  */
 /* Core */
-/* Community */
-const Long = require('long');
-/* Custom */
-const { trace, /*debug,*/ warn, crit } = require('./log.js');
+/* Community */ const Long = require('long'); /* Custom */
+const { trace, debug, warn, crit } = require('./log.js');
 const crypto = require('./crypto.js');
 'use strict';
 
@@ -42,14 +40,14 @@ const length = {
   CONTROL: 1,
   ID: 4,
   SEQUENCE: 4,
-
-  HASH: crypto.HASH_BYTES,
-
   TIMESTAMP: 8,
   VERSION: 2,
 
   REJECT_CODE: 1,
 
+  RANDOM: crypto.NONCE_BYTES,
+
+  HASH: crypto.HASH_BYTES,
   NONCE: crypto.NONCE_BYTES,
   PUBLIC_KEY: crypto.PUBLIC_KEY_BYTES,
   SECRET_KEY: crypto.SECRET_KEY_BYTES,
@@ -62,6 +60,8 @@ const length = {
   STREAMS: 4,
   MESSAGE: 4,
   RTT: 4,
+  SENT: 4,
+  RECV: 4,
   /* See article on NodeJS and UDP MTU, and RFC on maximum IP header size.
    * Recommended MTU is 576 for IPv4, 60 octet max for IP header size,
    * 8 octet UDP header size.
@@ -89,10 +89,19 @@ length.OPEN_DATA =
   length.CURRENCY + length.RATE + length.STREAMS + length.MESSAGE;
 /* CHALLENGE payload length. */
 length.CHALLENGE_DATA = length.OPEN_DATA;
+/* PING payload */
+length.PING_DATA =
+  length.RANDOM +
+  length.TIMESTAMP +
+  length.RTT + 
+  length.SENT +
+  length.RECV;
 /* REJECT segment length. */
 length.REJECT_DATA = length.TIMESTAMP + length.REJECT_CODE + 1;
 length.REJECT_DECRYPT = length.PREFIX + length.REJECT_DATA;
 length.REJECT_ENCRYPT = length.REJECT_DECRYPT + length.SEAL_PADDING;
+/* Min segment length. */
+length.SEGMENT_MIN = Math.min(length.PREFIX);
 Object.freeze(length);
 
 /**
@@ -187,8 +196,8 @@ function mkTime(buf) {
  * @return {Long} Time in Unix epoch milliseconds.
  */
 function mkTimeNow() {
-  const timestamp = Date.now();
-  return Long.fromNumber(timestamp, true);
+  const time = Date.now();
+  return Long.fromNumber(time, true);
 }
 
 // TODO yes, I know, I need to address the Int part if all numbers are actually positive
@@ -301,15 +310,15 @@ function unPrefix(buf) {
 /**
  * @return {number} Zero on failure; length written otherwise.
  */
-function mkReject(buf, timestamp, rejectCode, rejectMessage) {
+function mkReject(buf, time, rejectCode, rejectMessage) {
   if (buf.length < length.REJECT_DATA) {
     return 0;
   }
 
   let offset = 0;
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
+  buf.writeUInt32BE(time.getHighBitsUnsigned(), offset);
   offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
+  buf.writeUInt32BE(time.getLowBitsUnsigned(), offset);
   offset += length.TIMESTAMP/2;
   buf.writeUInt16BE(rejectCode, offset);
   offset += length.REJECT_CODE;
@@ -335,7 +344,7 @@ function unReject(out, buf) {
   }
 
   let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
+  out.time = Long.fromBytesBE(buf.slice(0, length.TIMESTAMP));
   offset += length.TIMESTAMP;
 
   out.code = buf.readUInt16BE(offset);
@@ -370,7 +379,7 @@ function lenOpen(routingLen) {
 /**
  * Encode unencrypted open information.
  */
-function mkOpen(openKey, ver, routing, id, timestamp, selfNonce, selfKey, currency, rate, streams, messages) {
+function mkOpen(openKey, ver, routing, id, time, selfNonce, selfKey, currency, rate, streams, messages) {
   trace();
 
   const l = length;
@@ -418,10 +427,14 @@ function mkOpen(openKey, ver, routing, id, timestamp, selfNonce, selfKey, curren
 
   tmp.writeUInt32BE(id, tlen);
   tlen += l.ID;
-  tmp.writeUInt32BE(timestamp.getHighBitsUnsigned(), tlen);
+  Buffer.from(time.toBytesBE()).copy(tmp, tlen, 0, l.TIMESTAMP);
+  tlen += l.TIMESTAMP;
+  /*
+  tmp.writeUInt32BE(time.getHighBitsUnsigned(), tlen);
   tlen += l.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), tlen);
+  buf.writeUInt32BE(time.getLowBitsUnsigned(), tlen);
   tlen += l.TIMESTAMP/2;
+  */
 
   selfNonce.copy(tmp, tlen, 0, length.NONCE);
   tlen += l.NONCE;
@@ -535,7 +548,7 @@ function lenChallenge() {
   return lenPrefix() + encrypted;
 }
 
-function mkChallenge(peerId, seq, peerKey, id, timestamp, selfNonce, selfKey, currency, rate, streams, messages) {
+function mkChallenge(peerId, seq, peerKey, id, time, selfNonce, selfKey, currency, rate, streams, messages) {
   trace();
 
   const l = length;
@@ -565,14 +578,18 @@ function mkChallenge(peerId, seq, peerKey, id, timestamp, selfNonce, selfKey, cu
 
   tmp.writeUInt32BE(id, tlen);
   tlen += l.ID;
-  tmp.writeUInt32BE(timestamp.getHighBitsUnsigned(), tlen);
+  Buffer.from(time.toBytesBE()).copy(tmp, tlen, 0, l.TIMESTAMP);
+  tlen += l.TIMESTAMP;
+  /*
+  tmp.writeUInt32BE(time.getHighBitsUnsigned(), tlen);
   tlen += l.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), tlen);
+  buf.writeUInt32BE(time.getLowBitsUnsigned(), tlen);
   tlen += l.TIMESTAMP/2;
+  */
 
-  selfNonce.copy(tmp, tlen, 0, length.NONCE);
+  selfNonce.copy(tmp, tlen, 0, l.NONCE);
   tlen += l.NONCE;
-  selfKey.copy(tmp, tlen, 0, length.PUBLIC_KEY);
+  selfKey.copy(tmp, tlen, 0, l.PUBLIC_KEY);
   tlen += l.PUBLIC_KEY;
 
   tmp.writeUInt32BE(currency, tlen);
@@ -607,12 +624,14 @@ function unChallenge(buf, publicKey, secretKey) {
 
   /* Check route length's validity. */
   if ((l.CHALLENGE_DATA + l.SEAL_PADDING) !== (buf.length - len)) {
+    crit('Invalid length for CHALLENGE segment.');
     return null;
   }
 
   const m = Buffer.allocUnsafe(l.OPEN_DATA);
 
   if (!crypto.unseal(m, buf.slice(len), publicKey, secretKey)) {
+    crit('Invalid encryption for CHALLENGE.');
     return null;
   }
 
@@ -661,6 +680,8 @@ function unChallenge(buf, publicKey, secretKey) {
   return chal;
 }
 
+/*
+ * TODO I think these can be removed...
 function mkResponse(buf, timestamp, nonce) {
   if (buf.length !== length.ACCEPT_DATA) {
     return 0;
@@ -689,38 +710,105 @@ function unResponse(out, buf) {
 
   return true;
 }
+*/
 
-function mkPing(buf, timestamp, rtt, nonce) {
-  if (buf.length !== length.PING_DATA) {
-    return 0;
-  }
+function lenPing() {
+  trace();
 
-  let offset = 0;
-  buf.writeUInt32BE(timestamp.getHighBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(timestamp.getLowBitsUnsigned(), offset);
-  offset += length.TIMESTAMP/2;
-  buf.writeUInt32BE(rtt, offset);
-  offset += length.RTT;
-  nonce.copy(buf, offset, 0, length.NONCE);
-  offset += length.NONCE;
+  const l = length;
 
-  return offset;
+  return l.PREFIX + l.BOX_PADDING + l.PING_DATA;
 }
 
-function unPing(out, buf) {
-  if (buf.length !== length.PING_DATA) {
-    return false;
+function mkPing(peerId, seq, selfNonce, peerPublicKey, selfSecretKey, rand, time, rtt, sent, recv) {
+  trace();
+
+  debug(arguments);
+
+  const l = length;
+
+  const bufLen = lenPing();
+  const buf = Buffer.allocUnsafe(bufLen);
+
+  let len = 0;
+
+  /* Write unencrypted portion of data to the buffer. */
+
+  let preLen = addPrefix(buf, !!peerPublicKey, control.PING, peerId, seq);
+  if (!preLen) {
+    crit('Invalid prefix length for PING.');
+    return null;
   }
 
-  let offset = 0;
-  out.timestamp = Long.fromBytesBE(buf.slice(offset, offset + length.TIMESTAMP));
-  offset += length.TIMESTAMP;
-  out.rtt = buf.readUInt32BE(offset);
-  offset += length.RTT;
-  out.nonce = buf.slice(offset, offset + length.NONCE);
+  len += preLen;
 
-  return true;
+  /* Write to tmp. */
+  const tmp = Buffer.allocUnsafe(l.PING_DATA);
+  let tlen = 0;
+
+  /* Write ping body. */
+  rand.copy(tmp, tlen, 0, l.RANDOM);
+  tlen += l.NONCE;
+  warn(Buffer.from(time.toBytesBE()));
+  Buffer.from(time.toBytesBE()).copy(tmp, tlen, 0, l.TIMESTAMP);
+  tlen += l.TIMESTAMP;
+  /*
+  tmp.writeUInt32BE(time.getHighBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+  buf.writeUInt32BE(time.getLowBitsUnsigned(), tlen);
+  tlen += l.TIMESTAMP/2;
+  */
+  buf.writeUInt32BE(rtt, tlen);
+  tlen += l.RTT;
+  buf.writeUInt32BE(sent, tlen);
+  tlen += l.SENT;
+  buf.writeUInt32BE(recv, tlen);
+  tlen += l.RECV;
+
+  if (peerPublicKey) {
+    if (!crypto.box(buf.slice(len), tmp.slice(0, tlen), selfNonce, peerPublicKey, selfSecretKey)) {
+      crit('Could not box PING.');
+      return null;
+    }
+  }
+  else {
+    tmp.copy(buf, len, 0, tlen);
+  }
+
+  return buf;
+}
+
+function unPing(buf, nonce, publicKey, secretKey) {
+  const l = length;
+
+  let len = l.PREFIX;
+  const out = {};
+
+  if ((l.PING_DATA + l.BOX_PADDING) !== (buf.length - len)) {
+    crit('Invalid length for PING segment.');
+    return null;
+  }
+
+  const m = Buffer.allocUnsafe(l.PING_DATA);
+
+  if (!crypto.unbox(m, buf.slice(len), nonce, publicKey, secretKey)) {
+    crit('Invalid encryption for PING.');
+    return null;
+  }
+
+  let off = 0;
+  out.random = Buffer.from(m.slice(off, off + l.RANDOM));
+  off += l.RANDOM;
+  out.time = Long.fromBytesBE(m.slice(off, off + l.TIMESTAMP));
+  off += l.TIMESTAMP;
+  out.rtt = m.readUInt32BE(off);
+  off += l.RTT;
+  out.sent = m.readUInt32BE(off);
+  off += l.SENT;
+  out.recv = m.readUInt32BE(off);
+  off += l.RECV;
+
+  return out;
 }
 
 /**
@@ -751,8 +839,6 @@ module.exports = {
   unOpen,
   mkChallenge,
   unChallenge,
-  mkResponse,
-  unResponse,
   mkPing,
   unPing,
   RATIO,
