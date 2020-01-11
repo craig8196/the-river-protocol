@@ -322,7 +322,7 @@ Added need on the programmer to pass along parseable strings.
 The compiled shared object should be forward and backward compatible
 taking version and implementation changes into account.
 Struct sizes and details should not be made available to the users;
-using handles (pointers) to reference needed resources.
+use handles (pointers) to reference needed resources.
 Library methods will allocate the needed resources.
 For embedded libraries an additional header can be made available that
 makes common structs globally available for handling one connection at a time.
