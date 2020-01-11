@@ -5,40 +5,24 @@ const crypto = require('./crypto.js');
 'use strict';
 
 
-describe('hash', () => {
-  test('can hash and unhash', () => {
-    const r1 = crypto.mkNonce();
-    const r2 = crypto.mkNonce();
-    expect(r1.compare(r2) !== 0).toBeTruthy();
-
-    const hash1 = crypto.mkHash(r1);
-    expect(r1.compare(hash1) !== 0).toBeTruthy();
-
-    const hash2 = crypto.mkHash(r2);
-    expect(r2.compare(hash2) !== 0).toBeTruthy();
-
-    expect(hash1.compare(hash2) !== 0).toBeTruthy();
-
-    expect(!crypto.verifyHash(r1, hash2)).toBeTruthy();
-    expect(!crypto.verifyHash(r2, hash1)).toBeTruthy();
-    expect(crypto.verifyHash(r1, hash1)).toBeTruthy();
-    expect(crypto.verifyHash(r2, hash2)).toBeTruthy();
-  });
-});
-
-describe('crypto', () => {
+describe('crypto id', () => {
   test('is id', () => {
     const id = crypto.mkId();
     const maxValue = Math.pow(2, 32) - 1;
     expect(typeof id === 'number').toBeTruthy();
     expect(id <= maxValue).toBeTruthy();
   });
+});
 
+
+describe('crypto nonce', () => {
   test('is nonce', () => {
     let nonce = crypto.mkNonce();
     expect(nonce.length).toEqual(crypto.NONCE_BYTES);
   });
+});
 
+describe('crypto seal', () => {
   test('is sealed', () => {
     let { publicKey, secretKey } = crypto.mkKeyPair();
     let text = 'Hello world!';
@@ -52,7 +36,9 @@ describe('crypto', () => {
 
     expect(m1).toEqual(m2);
   });
+});
 
+describe('crypto box', () => {
   test('is boxed', () => {
     let { publicKey, secretKey } = crypto.mkKeyPair();
     let nonce = crypto.mkNonce();
@@ -98,6 +84,39 @@ describe('crypto', () => {
     expect(!crypto.unbox(m2, e1, alice.nonce, chuck.publicKey, bob.secretKey)).toBeTruthy();
     expect(!crypto.unbox(m2, e1, bob.nonce, chuck.publicKey, bob.secretKey)).toBeTruthy();
     expect(crypto.unbox(m2, e1, chuck.nonce, chuck.publicKey, bob.secretKey)).toBeTruthy();
+  });
+});
+
+describe('crypto hash', () => {
+  test('can hash and unhash', () => {
+    const r1 = crypto.mkNonce();
+    const r2 = crypto.mkNonce();
+    expect(r1.compare(r2) !== 0).toBeTruthy();
+
+    const hash1 = crypto.mkHash(r1);
+    expect(r1.compare(hash1) !== 0).toBeTruthy();
+
+    const hash2 = crypto.mkHash(r2);
+    expect(r2.compare(hash2) !== 0).toBeTruthy();
+
+    expect(hash1.compare(hash2) !== 0).toBeTruthy();
+
+    expect(!crypto.verifyHash(r1, hash2)).toBeTruthy();
+    expect(!crypto.verifyHash(r2, hash1)).toBeTruthy();
+    expect(crypto.verifyHash(r1, hash1)).toBeTruthy();
+    expect(crypto.verifyHash(r2, hash2)).toBeTruthy();
+  });
+});
+
+describe('crypto sign', () => {
+  test('can sign', () => {
+    const text = 'knock tock';
+    const m = Buffer.from(text, 'utf8');
+    const k = crypto.mkSignPair();
+    const sig = Buffer.allocUnsafe(crypto.SIGN_MAC_BYTES);
+
+    expect(crypto.sign(sig, m, k.secretKey)).toBeTruthy();
+    expect(crypto.unsign(sig, m, k.publicKey)).toBeTruthy();
   });
 });
 
