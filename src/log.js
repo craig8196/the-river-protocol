@@ -56,6 +56,9 @@ function normalize(args) {
     if (typeof arg === 'string') {
       msg += arg;
     }
+    else if (arg instanceof Buffer) {
+      msg += arg.toString('hex');
+    }
     else if (arg && ((arg.stack && arg.message) || (arg instanceof Error))) {
       msg += getLine1(arg) + ' -> ' + String(arg);
     }
