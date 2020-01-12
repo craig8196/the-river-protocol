@@ -51,9 +51,8 @@ State.initEnum({
           return State.BIND;
         default:
           this.emit('error', new Error('Expecting START event. Found: ' + String(e.name)));
-          break;
+          return State.START;
       }
-      return this._state;
     },
 
     exit() {
@@ -71,29 +70,16 @@ State.initEnum({
 
     transition(e) {
       switch (e) {
-        case Event.SOCKET_ERROR:
-          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
-          return State.ERROR;
-        case Event.SOCKET_MESSAGE:
-          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
-          return State.ERROR;
         case Event.SOCKET_BIND:
           /* Expected path. */
           return State.LISTEN;
-        case Event.SOCKET_BIND_TIMEOUT:
-          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
-          return State.ERROR;
-        case Event.SOCKET_CLOSE:
-          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
-          return State.ERROR;
         case Event.STOP:
           this._setExpectSocketEvents();
           return State.CLOSE;
         default:
-          this.emit('error', new Error('Expecting SOCKET* events. Found: ' + String(e.name)));
+          this.emit('error', new Error(String(e.name) + ' received before SOCKET_BIND.'));
           return State.ERROR;
       }
-      //return this._state;
     },
 
     exit() {
@@ -121,7 +107,6 @@ State.initEnum({
           this.emit('error', new Error('Expecting SOCKET* events. Found: ' + String(e.name)));
           return State.CLOSE_ERROR;
       }
-      //return this._state;
     },
 
     exit() {
@@ -189,7 +174,6 @@ State.initEnum({
           this.emit('error', new Error('Expecting SOCKET_CLOSE events. Found: ' + String(e.name)));
           return State.ERROR;
       }
-      //return this._state;
     },
 
     exit() {
@@ -213,7 +197,6 @@ State.initEnum({
           this.emit('error', new Error('Expecting SOCKET_CLOSE events. Found: ' + String(e.name)));
           return State.ERROR;
       }
-      //return this._state;
     },
 
     exit() {
@@ -284,11 +267,13 @@ class Router extends EventEmitter {
     this._reported = new Map();
 
     this._openKeys = options.openKeys;
+    this._signKeys = options.signKeys;
     this._maxConnections = options.maxConnections;
     this._allowIncoming = options.allowIncoming;
     this._allowOutgoing = options.allowOutgoing;
     this._allowUnsafeOpen = options.allowUnsafeOpen;
     this._allowUnsafeSegment = options.allowUnsafeSegment;
+    this._allowUnsafeSign = options.allowUnsafeSign;
 
     this._bindTimeoutMs = 1000;
     this._closeTimeoutMs = 1000;
@@ -340,56 +325,16 @@ class Router extends EventEmitter {
    * @private
    */
   _setListeners() {
-    trace();
+    /* Save the event handlers. */
+    this._handleSocketError = this._socketError.bind(this);
+    this._handleSocketMessage = this._socketMessage.bind(this);
+    this._handleSocketListening = this._socketBind.bind(this);
+    this._handleSocketClose = this._socketClose.bind(this);
 
-    const router = this;
-
-    /**
-     * Pass error along.
-     */
-    function handleError(error) {
-      trace();
-
-      router._socketError(error);
-    }
-
-    /**
-     * Pass segments along.
-     */
-    function handleMessage(message, rinfo) {
-      trace();
-
-      router._socketMessage(message, rinfo);
-    }
-
-    /**
-     * Listen for bind event.
-     */
-    function handleListening() {
-      trace();
-
-      router._socketBind();
-    }
-
-    /**
-     * Listen for close event.
-     */
-    function handleClose() {
-      trace();
-
-      router._socketClose();
-    }
-
-    // Save the event handlers
-    this._handleSocketError = handleError;
-    this._handleSocketMessage = handleMessage;
-    this._handleSocketListening = handleListening;
-    this._handleSocketClose = handleClose;
-
-    this._socket.on('error', handleError);
-    this._socket.on('message', handleMessage);
-    this._socket.on('listening', handleListening);
-    this._socket.on('close', handleClose);
+    this._socket.on('error', this._handleSocketError);
+    this._socket.on('message', this._handleSocketMessage);
+    this._socket.on('listening', this._handleSocketListening);
+    this._socket.on('close', this._handleSocketClose);
   }
 
   /**
@@ -397,8 +342,6 @@ class Router extends EventEmitter {
    * @private
    */
   _cleanupListeners() {
-    trace();
-
     this._socket.off('error', this._handleSocketError);
     this._socket.off('message', this._handleSocketMessage);
     this._socket.off('listening', this._handleSocketListening);
@@ -581,7 +524,7 @@ class Router extends EventEmitter {
 
       let connection = this._getAddress(sourceKey);
       if (!connection) {
-        if (!this._screenCb(open.route, rinfo)) {
+        if (!this._screenCb(pre.id, open.route, open.signatureBuffer, open.signature, rinfo)) {
           /* Cannot verify sender. Reject with caution. */
           this._reject(sourceKey, rinfo, reject.USER);
           return;
@@ -594,7 +537,15 @@ class Router extends EventEmitter {
           return;
         }
 
-        connection = mkConnection(newId, this._socket.mkSender(rinfo));
+        connection = mkConnection(
+          newId,
+          this._socket.mkSender(rinfo),
+          {
+            signKey: this._signKeys.secretKey,
+            allowUnsafeSign: true
+          }
+        );
+
         if (!connection) {
           this._reject(sourceKey, rinfo, reject.SERVER);
           return;
@@ -602,6 +553,7 @@ class Router extends EventEmitter {
 
         this._setId(newId, connection);
         this._setAddress(sourceKey, connection);
+        connection.challenge();
       }
 
       connection.handleOpen(pre, open);
@@ -924,6 +876,7 @@ class Router extends EventEmitter {
  * @param {boolean} [options.allowOutgoing=false] - Allow outgoing connections.
  * @param {boolean} [options.allowUnsafeOpen=false] - Allow unencrypted OPEN requests.
  * @param {boolean} [options.allowUnsafeSegment=false] - Allow all traffic to be unencrypted.
+ * @param {boolean} [options.allowUnsafeSign=false] - Allow not signing CHALLENGE segments. Acts as a safety to remind users to specify a key or explicitly take the risk.
  * @return {Router}
  */
 function mkRouter(socket, options) {
@@ -952,6 +905,15 @@ function mkRouter(socket, options) {
     'allowUnsafeOpen' in options ? (!!options.allowUnsafeOpen) : false;
   options.allowUnsafeSegment =
     'allowUnsafeSegment' in options ? (!!options.allowUnsafeSegment) : false;
+  options.allowUnsafeSign =
+    'allowUnsafeSign' in options ? (!!options.allowUnsafeSign) : false;
+
+  if (!options.signKeys && !options.allowUnsafeSign) {
+    throw new Error(
+      'Incompatible settings. ' +
+      'Either set options.allowUnsafeSign=true or specify options.signKeys'
+    );
+  }
 
   if (!options.openKeys && !options.allowUnsafeOpen) {
     options.openKeys = crypto.mkKeyPair();

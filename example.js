@@ -6,11 +6,12 @@ const { info, crit } = require('./src/log.js');
 const { defaults } = require('./src/protocol.js');
 
 const openKeys = trip.mkKeyPair();
+const signKeys = trip.mkSignPair();
 
 // Create server object.
 // Server is started at end of script.
 // Default port is 42443 when null is passed.
-const server = trip.mkServer(null, { openKeys });
+const server = trip.mkServer(null, { openKeys, signKeys });
 
 // Start server. Binds to underlying interface.
 server.on('start', () => {
@@ -70,7 +71,7 @@ server.on('listen', () => {
   // Now we tell to connect.
   // TODO we shouldn't have to specify the default port...
   const destination = { address: 'localhost', port: defaults.PORT };
-  const options = { openKey: openKeys.publicKey };
+  const options = { openKey: openKeys.publicKey, unsignKey: signKeys.publicKey };
   client.open(destination, options);
   // TODO should this be formatted as:
   // client.open(mkConnection(dest, options));
@@ -78,9 +79,11 @@ server.on('listen', () => {
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
-server.screen((binary, address) => {
-  info('Screening data: ', binary.toString('hex'));
-  info('Screening address: ', address);
+server.screen((id, binary, sigBuf, sig, address) => {
+  info('Screening id:', id);
+  info('Screening data:', binary);
+  info('Screening signature:', sig);
+  info('Screening address:', address);
   return true;
 });
 

@@ -4,7 +4,7 @@
  */
 /* Core */
 /* Community */ const Long = require('long'); /* Custom */
-const { trace, debug, warn, crit } = require('./log.js');
+const { trace, debug, warn } = require('./log.js');
 const crypto = require('./crypto.js');
 'use strict';
 
@@ -53,6 +53,7 @@ const length = {
   SECRET_KEY: crypto.SECRET_KEY_BYTES,
   BOX_PADDING: crypto.BOX_MAC_BYTES,
   SEAL_PADDING: crypto.SEAL_MAC_BYTES,
+  SIGN_PADDING: crypto.SIGN_MAC_BYTES,
 
   UUID: 16,
   CURRENCY: 4,
@@ -371,7 +372,7 @@ function lenOpen(routingLen) {
   const l = length;
 
   const unencrypted = l.VERSION + lenVarInt(routingLen) + routingLen;
-  const encrypted = l.SEAL_PADDING + l.OPEN_DATA;
+  const encrypted = l.SEAL_PADDING + l.OPEN_DATA + l.SIGN_PADDING;
 
   return lenPrefix() + unencrypted + encrypted;
 }
@@ -379,7 +380,7 @@ function lenOpen(routingLen) {
 /**
  * Encode unencrypted open information.
  */
-function mkOpen(openKey, ver, routing, id, time, selfNonce, selfKey, currency, rate, streams, messages) {
+function mkOpen(openKey, ver, routing, id, time, selfNonce, selfKey, currency, rate, streams, messages, signKey) {
   trace();
 
   const l = length;
@@ -394,6 +395,7 @@ function mkOpen(openKey, ver, routing, id, time, selfNonce, selfKey, currency, r
 
   let preLen = addPrefix(buf, !!openKey, control.OPEN, 0, 0);
   if (!preLen) {
+    warn('Invalid prefix length');
     return null;
   }
   
@@ -452,11 +454,24 @@ function mkOpen(openKey, ver, routing, id, time, selfNonce, selfKey, currency, r
 
   if (openKey) {
     if (!crypto.seal(buf.slice(len), tmp.slice(0, tlen), openKey)) {
+      warn('Unable to seal OPEN.');
       return null;
     }
   }
   else {
     tmp.copy(buf, len, 0, tlen);
+  }
+
+  const signOffset = len + l.OPEN_DATA + l.SEAL_PADDING;
+  if (signKey) {
+    if (!crypto.sign(buf.slice(signOffset), buf.slice(0, signOffset), signKey)) {
+      warn('Unable to sign OPEN.');
+      return null;
+    }
+  }
+  else {
+    /* Zero fill the signature section. */
+    buf.fill(0, signOffset);
   }
 
   return buf;
@@ -473,20 +488,26 @@ function unOpen(buf, publicKey, secretKey) {
   len += octets;
 
   if ((len + routeLen) > buf.length) {
+    warn('Invalid OPEN segment length.');
     return null;
   }
 
   open.route = buf.slice(len, routeLen);
   len += routeLen;
 
+  open.signatureBuffer = buf.slice(0, buf.length - l.SIGN_PADDING);
+  open.signature = buf.slice(buf.length - l.SIGN_PADDING);
+
   /* Check route length's validity. */
-  if ((l.OPEN_DATA + l.SEAL_PADDING) !== (buf.length - len)) {
+  if ((l.OPEN_DATA + l.SEAL_PADDING + l.SIGN_PADDING) !== (buf.length - len)) {
+    warn('Invalid OPEN length.');
     return null;
   }
 
   const m = Buffer.allocUnsafe(l.OPEN_DATA);
 
-  if (!crypto.unseal(m, buf.slice(len), publicKey, secretKey)) {
+  if (!crypto.unseal(m, buf.slice(len, buf.length - l.SIGN_PADDING), publicKey, secretKey)) {
+    warn('Unable to unseal OPEN.');
     return null;
   }
 
@@ -508,7 +529,7 @@ function unOpen(buf, publicKey, secretKey) {
 
   const hash = m.slice(0, l.HASH);
   if (!crypto.verifyHash(buf.slice(0, len), hash)) {
-    warn('Bad hash!');
+    warn('Bad hash for OPEN!');
     return null;
   }
 
@@ -532,6 +553,8 @@ function unOpen(buf, publicKey, secretKey) {
   open.maxMessage = m.readUInt32BE(off);
   off += l.MESSAGE;
 
+  open.segment = buf;
+
   return open;
 }
 
@@ -543,15 +566,16 @@ function lenChallenge() {
 
   const l = length;
 
-  const encrypted = l.SEAL_PADDING + l.CHALLENGE_DATA;
+  const encrypted = l.SEAL_PADDING + l.CHALLENGE_DATA + l.SIGN_PADDING;
 
   return lenPrefix() + encrypted;
 }
 
-function mkChallenge(peerId, seq, peerKey, id, time, selfNonce, selfKey, currency, rate, streams, messages) {
+function mkChallenge(peerId, seq, peerKey, id, time, selfNonce, selfKey, currency, rate, streams, messages, openBuf, signKey) {
   trace();
 
   const l = length;
+  warn('Signing with:', signKey);
 
   const bufLen = lenChallenge();
   const buf = Buffer.allocUnsafe(bufLen);
@@ -561,7 +585,7 @@ function mkChallenge(peerId, seq, peerKey, id, time, selfNonce, selfKey, currenc
 
   let preLen = addPrefix(buf, !!peerKey, control.CHALLENGE, peerId, seq);
   if (!preLen) {
-    crit('Invalid prefix length for CHALLENGE.');
+    warn('Invalid prefix length for CHALLENGE.');
     return null;
   }
   
@@ -603,12 +627,32 @@ function mkChallenge(peerId, seq, peerKey, id, time, selfNonce, selfKey, currenc
 
   if (peerKey) {
     if (!crypto.seal(buf.slice(len), tmp.slice(0, tlen), peerKey)) {
-      crit('Could not seal CHALLENGE.');
+      warn('Could not seal CHALLENGE.');
       return null;
     }
   }
   else {
     tmp.copy(buf, len, 0, tlen);
+  }
+
+  const signOffset = len + l.CHALLENGE_DATA + l.SEAL_PADDING;
+  if (signKey) {
+    warn('Buf:', buf.slice(0, signOffset));
+    warn('Buf:', buf.slice(signOffset));
+    const signBuf = Buffer.allocUnsafe(openBuf.length + signOffset);
+    openBuf.copy(signBuf, 0, 0, openBuf.length);
+    buf.copy(signBuf, openBuf.length, 0, signOffset);
+    warn('Signlen!', signBuf.length);
+    warn('Signthis!', signBuf);
+    if (!crypto.sign(buf.slice(signOffset), signBuf, signKey)) {
+      warn('Unable to sign CHALLENGE.');
+      return null;
+    }
+    warn('Buf:', buf.slice(signOffset));
+  }
+  else {
+    /* Zero fill the signature section. */
+    buf.fill(0, signOffset);
   }
 
   return buf;
@@ -620,18 +664,19 @@ function unChallenge(buf, publicKey, secretKey) {
   let len = l.PREFIX;
   const chal = {};
 
-  // TODO check length
+  chal.signatureBuffer = buf.slice(0, buf.length - l.SIGN_PADDING);
+  chal.signature = buf.slice(buf.length - l.SIGN_PADDING);
 
   /* Check route length's validity. */
-  if ((l.CHALLENGE_DATA + l.SEAL_PADDING) !== (buf.length - len)) {
-    crit('Invalid length for CHALLENGE segment.');
+  if ((l.CHALLENGE_DATA + l.SEAL_PADDING + l.SIGN_PADDING) !== (buf.length - len)) {
+    warn('Invalid length for CHALLENGE segment.');
     return null;
   }
 
   const m = Buffer.allocUnsafe(l.OPEN_DATA);
 
-  if (!crypto.unseal(m, buf.slice(len), publicKey, secretKey)) {
-    crit('Invalid encryption for CHALLENGE.');
+  if (!crypto.unseal(m, buf.slice(len, buf.length - l.SIGN_PADDING), publicKey, secretKey)) {
+    warn('Invalid encryption for CHALLENGE.');
     return null;
   }
 
@@ -736,7 +781,7 @@ function mkPing(peerId, seq, selfNonce, peerPublicKey, selfSecretKey, rand, time
 
   let preLen = addPrefix(buf, !!peerPublicKey, control.PING, peerId, seq);
   if (!preLen) {
-    crit('Invalid prefix length for PING.');
+    warn('Invalid prefix length for PING.');
     return null;
   }
 
@@ -767,7 +812,7 @@ function mkPing(peerId, seq, selfNonce, peerPublicKey, selfSecretKey, rand, time
 
   if (peerPublicKey) {
     if (!crypto.box(buf.slice(len), tmp.slice(0, tlen), selfNonce, peerPublicKey, selfSecretKey)) {
-      crit('Could not box PING.');
+      warn('Could not box PING.');
       return null;
     }
   }
@@ -785,14 +830,14 @@ function unPing(buf, nonce, publicKey, secretKey) {
   const out = {};
 
   if ((l.PING_DATA + l.BOX_PADDING) !== (buf.length - len)) {
-    crit('Invalid length for PING segment.');
+    warn('Invalid length for PING segment.');
     return null;
   }
 
   const m = Buffer.allocUnsafe(l.PING_DATA);
 
   if (!crypto.unbox(m, buf.slice(len), nonce, publicKey, secretKey)) {
-    crit('Invalid encryption for PING.');
+    warn('Invalid encryption for PING.');
     return null;
   }
 

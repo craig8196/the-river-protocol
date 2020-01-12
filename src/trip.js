@@ -7,7 +7,7 @@ const EventEmitter = require('events');
 /* Community */
 const { Enum } = require('enumify');
 /* Custom */
-const { mkKeyPair, mkNonce } = require('./crypto.js');
+const { mkNonce, mkKeyPair, mkSignPair } = require('./crypto.js');
 const { mkSocket, SocketInterface, SenderInterface } = require('./socket.js');
 const { mkRouter } = require('./router.js');
 const { defaults } = require('./protocol.js');
@@ -298,6 +298,10 @@ function mkClient(socket, options) {
   options.maxConnections = 1;
   options.allowIncoming = false;
   options.allowOutgoing = true;
+  /* We don't allow incoming connections for clients,
+   * so there are no CHALLENGE segments to sign.
+   */
+  options.allowUnsafeSign = true;
 
   return new Client(mkRouter(socket, options));
 }
@@ -315,7 +319,7 @@ SettingPreset.initEnum([
 ]);
 
 /**
- * @param {SettingPreset} presetType - Specify what you are doing.
+ * @param {Preset} presetType - Specify what you are doing.
  */
 function mkSettings(/* TODO presetType */) {
   const settings = {};
@@ -325,8 +329,9 @@ function mkSettings(/* TODO presetType */) {
 
 module.exports = {
   // Typical-use API
-  mkKeyPair,
   mkNonce,
+  mkKeyPair,
+  mkSignPair,
   mkSocket,
   mkServer,
   mkClient,

@@ -18,14 +18,16 @@ const { version, timeout, length, limit, control/*, reject*/ } = p;
 class Event extends Enum {}
 Event.initEnum([
   'OPEN',
+  'CHALLENGE',
   'OPEN_RECV',
+  'CHALLENGE_RECV',
+  'PING_RECV',
+
   'OPEN_TIMEOUT',
   'OPEN_ERROR',
-  'CHALLENGE_RECV',
   'CHALLENGE_TIMEOUT',
   'CHALLENGE_ERROR',
   'FORWARD_RECV',
-  'PING_RECV',
   'PING_TIMEOUT',
   'PING_ERROR',
   'PING_READY',
@@ -50,12 +52,11 @@ State.initEnum({
     enter() {
     },
 
-    transition(e, data) {
+    transition(e) {
       switch (e) {
         case Event.OPEN:
           return State.OPEN;
-        case Event.OPEN_RECV:
-          this._setPeer(data);
+        case Event.CHALLENGE:
           return State.CHALLENGE;
         default:
           this.emit('error', new Error('Expected START events. Found: ' + String(e.name)));
@@ -69,6 +70,7 @@ State.initEnum({
 
   'OPEN': {
     enter() {
+      this._isPinger = true;
       if (!this._selfKeys && this._allowUnsafeSegment) {
         this._selfKeys = crypto.mkKeyPair();
         this._selfNonce = crypto.mkNonce();
@@ -96,7 +98,7 @@ State.initEnum({
 
   'CHALLENGE': {
     enter() {
-      this._startChallengeAlgorithm();
+      //this._startChallengeAlgorithm();
     },
 
     transition(e, data) {
@@ -111,6 +113,9 @@ State.initEnum({
         case Event.OPEN_RECV:
           /* Update the peer data incase peer changed certain parameters. */
           this._setPeer(data);
+          if (!this._sendChallenge(data)) {
+            return State.ERROR;
+          }
           return State.CHALLENGE;
         default:
           this.emit('error', new Error('Expected CHALLENGE events. Found: ' + String(e.name)));
@@ -119,7 +124,7 @@ State.initEnum({
     },
 
     exit() {
-      this._stopChallengeAlgorithm();
+      //this._stopChallengeAlgorithm();
     },
   },
 
@@ -149,6 +154,7 @@ State.initEnum({
 
   'READY': {
     enter() {
+      this._setEstablished();
       this._startReadyAlgorithm();
     },
 
@@ -174,6 +180,7 @@ State.initEnum({
 
   'READY_PING': {
     enter() {
+      this._setEstablished();
       this._startReadyPingAlgorithm();
     },
 
@@ -312,6 +319,7 @@ class Connection extends EventEmitter {
 
     /* Router configuration. */
     this._allowUnsafeSegment = options.allowUnsafeSegment;
+    this._allowUnsafeSign = options.allowUnsafeSign;
 
     /* Self variables. */
     this._selfKeys = options.keys;
@@ -319,6 +327,9 @@ class Connection extends EventEmitter {
 
     /* Peer variables. */
     this._openKey = options.openKey;
+    this._signKey = options.signKey;
+    this._unsignKey = options.unsignKey;
+    this._verifyCb = null;//TODO
     this._peerKey = null;
     this._peerNonce = null;
     // TODO implement bitmap
@@ -340,6 +351,8 @@ class Connection extends EventEmitter {
     this._curStreams = this._maxStreams;
 
     this._sequence = 0;
+
+    this._isEstablished = false;
 
     this._time = p.mkTimeNow();
 
@@ -413,6 +426,14 @@ class Connection extends EventEmitter {
    */
   set _sequence(val) {
     this._internalSequence = val;
+  }
+
+  /**
+   * Flag that the connection has been established.
+   * @private
+   */
+  _setEstablished() {
+    this._isEstablished = true;
   }
 
   /**
@@ -774,26 +795,33 @@ class Connection extends EventEmitter {
   _sendOpen() {
     trace();
 
-    const buf = p.mkOpen(
-      this._openKey,
-      version,
-      null,
-      this._id,
-      this._time,
-      this._selfNonce,
-      this._selfKeys.publicKey,
-      this._maxCurrency,
-      this._regenCurrency,
-      this._maxStreams,
-      this._maxMessage,
-    );
+    if (!this._openBufferSave) {
+      const buf = p.mkOpen(
+        this._openKey,
+        version,
+        null,
+        this._id,
+        this._time,
+        this._selfNonce,
+        this._selfKeys.publicKey,
+        this._maxCurrency,
+        this._regenCurrency,
+        this._maxStreams,
+        this._maxMessage,
+        this._signKey,
+      );
 
-    if (!buf) {
-      crit('Failed to make OPEN!');
-      return false;
+      if (!buf) {
+        crit('Failed to make OPEN!');
+        return false;
+      }
+
+      this._openBufferSave = buf;
+      this._sender.send(buf);
     }
-
-    this._sender.send(buf);
+    else {
+      this._sender.send(this._openBufferSave);
+    }
 
     return true;
   }
@@ -802,7 +830,7 @@ class Connection extends EventEmitter {
    * Create and send the challenge segment.
    * @private.
    */
-  _sendChallenge() {
+  _sendChallenge(open) {
     trace();
 
     const buf = p.mkChallenge(
@@ -817,6 +845,8 @@ class Connection extends EventEmitter {
       this._regenCurrency,
       this._maxStreams,
       this._maxMessage,
+      open.segment,
+      this._signKey,
     );
 
     if (!buf) {
@@ -932,8 +962,14 @@ class Connection extends EventEmitter {
    * Open this connection. The handshake process will begin.
    */
   open() {
-    this._isPinger = true;
     this._transition(Event.OPEN);
+  }
+
+  /**
+   * Signal that this connection will be challenging any OPEN segments.
+   */
+  challenge() {
+    this._transition(Event.CHALLENGE);
   }
 
   /**
@@ -962,6 +998,11 @@ class Connection extends EventEmitter {
    */
   handleOpen(pre, open) {
     trace();
+    
+    if (this._isEstablished) {
+      /* Assuming packet replay. */
+      return;
+    }
 
     if (!this._checkSequence(pre.seq)) {
       /* Sequence already seen. May be a replay attack. */
@@ -985,13 +1026,49 @@ class Connection extends EventEmitter {
     switch (pre.control) {
       case control.CHALLENGE:
         {
+          if (this._isEstablished) {
+            /* Assuming packet replay. */
+            return;
+          }
+
+          // TODO test the sequence value
           let data = p.unChallenge(
             seg,
             this._selfKeys.publicKey,
-            this._selfKeys.secretKey
+            this._selfKeys.secretKey,
           );
 
+          if (!this._openBufferSave) {
+            /* Nothing was sent...? */
+            warn('Received CHALLENGE but no saved open buffer.');
+            return;
+          }
+
+          const openLen = this._openBufferSave.length;
+          const chalLen = data.signatureBuffer.length;
+          const signBuf = Buffer.allocUnsafe(openLen + chalLen);
+          this._openBufferSave.copy(signBuf, 0, 0, openLen);
+          data.signatureBuffer.copy(signBuf, openLen, 0, chalLen);
+          warn('UnSignlen!', signBuf.length);
+          warn('UnSignthis!', signBuf);
+
           debug('CHALLENGE data:', data);
+
+          if (this._unsignKey) {
+            if (!crypto.unsign(data.signature, signBuf, this._unsignKey)) {
+              warn('Unable to verify CHALLENGE signature.');
+              return;
+            }
+          }
+          else if (this._verifyCb) {
+            if (!this._verifyCb(data.signature, signBuf)) {
+              warn('User unable to verify CHALLENGE signature.');
+              return;
+            }
+          }
+          else if (!this._allowUnsafeSign) {
+            return;
+          }
 
           if (!data) {
             /* Invalid payload/decryption. */
@@ -1035,9 +1112,12 @@ class Connection extends EventEmitter {
  * @param {SenderInterface} sender - Required. Valid socket sender type.
  * @param {object} [options] - Options object.
  * @param {Buffer} [options.openKey] - Valid binary key.
+ * @param {Buffer} [options.signKey] - Valid message signing key.
+ * @param {Buffer} [options.unsignKey] - Valid message unsigning key to validate server.
  * @param {boolean} [options.allowUnsafeSegment=false] - Allow unencrypted traffic.
- * @param {object} keys - Valid keys from crypto.
- * @param {Buffer} nonce - Valid nonce from crypto.
+ * @param {boolean} [options.allowUnsafeSign=false] - Allow ignoring server's signature.
+ * @param {object} keys - Valid keys from crypto. Auto-generated.
+ * @param {Buffer} nonce - Valid nonce from crypto. Auto-generated.
  * @return {Connection}
  */
 function mkConnection(id, sender, options) {
@@ -1055,8 +1135,22 @@ function mkConnection(id, sender, options) {
 
   options.openKey =
     'openKey' in options ? options.openKey : null;
+  options.signKey =
+    'signKey' in options ? options.signKey : null;
+  options.unsignKey =
+    'unsignKey' in options ? options.unsignKey : null;
   options.allowUnsafeSegment =
     'allowUnsafeSegment' in options ? (!!options.allowUnsafeSegment) : false;
+  options.allowUnsafeSign =
+    'allowUnsafeSign' in options ? (!!options.allowUnsafeSign) : false;
+  warn(options.unsignKey);
+
+  if (!options.unsignKey && !options.allowUnsafeSign) {
+    throw new Error(
+      'Incompatible settings. ' +
+      'Either set options.allowUnsafeSign=true or specify options.unsignKey'
+    );
+  }
 
   if (!options.allowUnsafeSegment) {
     options.keys = crypto.mkKeyPair();
