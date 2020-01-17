@@ -11,6 +11,7 @@ const crypto = require('./crypto.js');
 const { trace, debug, info, warn, crit } = require('./log.js');
 const p = require('./protocol.js');
 const { SenderInterface } = require('./socket.js');
+const { WritableStream } = require('./stream.js');
 const { version, timeout, length, limit, control/*, reject*/ } = p;
 'use strict';
 
@@ -103,6 +104,9 @@ State.initEnum({
 
     transition(e, data) {
       switch (e) {
+        case Event.STREAM_RECV:
+          this._handleStreamData(data);
+          return State.READY;
         case Event.PING_RECV:
           if (this._processPeerPing(data)) {
             this._sendPing();
@@ -156,10 +160,14 @@ State.initEnum({
     enter() {
       this._setEstablished();
       this._startReadyAlgorithm();
+      this._acceptConnection();
     },
 
     transition(e, data) {
       switch (e) {
+        case Event.STREAM_RECV:
+          this._handleStreamData(data);
+          return State.READY;
         case Event.PING_RECV:
           if (this._processPeerPing(data)) {
             this._sendPing();
@@ -182,10 +190,14 @@ State.initEnum({
     enter() {
       this._setEstablished();
       this._startReadyPingAlgorithm();
+      this._acceptConnection();
     },
 
-    transition(e) {
+    transition(e, data) {
       switch (e) {
+        case Event.STREAM_RECV:
+          this._handleStreamData(data);
+          return State.READY_PING;
         case Event.PING_READY:
           return State.PING;
         default:
@@ -292,15 +304,18 @@ class Connection extends EventEmitter {
    * @param {SenderInterface} sender - Required. For communication.
    * @param {object} options - Required. See mkConnection for details.
    */
-  constructor(id, sender, options) {
+  constructor(router, id, sender, options) {
     super();
 
     trace();
 
-    // TODO move all settings to mkConnection
+    this._router = router;
 
     this._id = id;
     this._sender = sender;
+    // TODO move streams to array of fixed size once established
+    // TODO streams should be indexed for efficiency
+    // TODO there is a way to possibly map and auto-full-duplex streams if users want...
     this._streams = new Map();
 
     /*
@@ -346,6 +361,7 @@ class Connection extends EventEmitter {
     this._regenCurrency = limit.CURRENCY_REGEN;
     this._maxStreams = limit.STREAMS;
     this._maxMessage = limit.MESSAGE;
+    this._maxMessages = limit.MESSAGES;
 
     this._curCurrency = this._maxCurrency;
     this._curStreams = this._maxStreams;
@@ -938,6 +954,19 @@ class Connection extends EventEmitter {
   }
 
   /**
+   * Give new connection to the user.
+   * @private
+   */
+  _acceptConnection() {
+    if (this._isPinger) {
+      this.emit('connect');
+    }
+    else {
+      this._router.emit('accept', this);
+    }
+  }
+
+  /**
    * Any value less than or equal to is guaranteed single packet delivery.
    * @return {number} The user MTU.
    */
@@ -991,6 +1020,66 @@ class Connection extends EventEmitter {
    */
   setSender(sender) {
     this._sender = sender;
+  }
+
+  /**
+   * Create a stream to send messages on.
+   * The stream will be corked if the stream slot is unavailable or stream allotment is used up.
+   * TODO document variables
+   * @return {stream.Writable} null if invalid id value or connection is closed/error state.
+   */
+  mkStream(id, reliable, ordered, autoChunk, realTime) {
+    function _checkAgain() {
+      if (id in this._streams || this._streams.size >= this._maxStreams) {
+        conn.once('streamClosed', _checkAgain);
+      }
+      else {
+        this._stream[id] = stream;
+        stream.uncork();
+      }
+    }
+
+    trace();
+
+    if (typeof id !== 'number') {
+      return null;
+    }
+
+    reliable = !!reliable;
+    ordered = !!ordered;
+    autoChunk = !!autoChunk;
+    realTime = !!realTime;
+
+    const options = {
+      id,
+      reliable,
+      ordered,
+      autoChunk,
+      realTime,
+    };
+
+    const conn = this;
+
+    const stream = new WritableStream(conn, options);
+
+    let ok = false;
+
+    if (id in this._streams) {
+      stream.cork();
+    }
+    else if (this._streams.size >= this._maxStreams) {
+      stream.cork();
+    }
+    else {
+      this._streams[id] = stream;
+      ok = true;
+    }
+
+    if (!ok) {
+      conn.once('streamClosed', _checkAgain);
+    }
+
+    return stream;
   }
 
   /**
@@ -1120,7 +1209,7 @@ class Connection extends EventEmitter {
  * @param {Buffer} nonce - Valid nonce from crypto. Auto-generated.
  * @return {Connection}
  */
-function mkConnection(id, sender, options) {
+function mkConnection(router, id, sender, options) {
   if (!id) {
     throw new Error('Invalid ID.');
   }
@@ -1161,7 +1250,7 @@ function mkConnection(id, sender, options) {
     options.nonce = null;
   }
 
-  return new Connection(id, sender, options);
+  return new Connection(router, id, sender, options);
 }
 
 module.exports = {

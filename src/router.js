@@ -538,6 +538,7 @@ class Router extends EventEmitter {
         }
 
         connection = mkConnection(
+          this,
           newId,
           this._socket.mkSender(rinfo),
           {
@@ -821,7 +822,7 @@ class Router extends EventEmitter {
 
           try {
             const sender = router._socket.mkSender(dest);
-            const conn = mkConnection(id, sender, options);
+            const conn = mkConnection(router, id, sender, options);
             router._setId(id, conn);
             conn.on('connect', () => {
               resolve(conn);

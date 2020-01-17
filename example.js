@@ -23,8 +23,8 @@ server.on('listen', () => {
   info('Ready to accept connections.');
 
   // Create client. In theory a client could be opened on the server's
-  // Router object, but we don't do that yet.
-  // Choose any open port by passing null.
+  // Router object, but we want to simulate a client connection.
+  // Choose any open port by passing null or leaving blank.
   const client = trip.mkClient();
 
   // Connect call at bottom of this block.
@@ -38,13 +38,18 @@ server.on('listen', () => {
     // By default the framework should convert the string to UTF-8.
     stream.send('Hello, world!');
     stream.send('Take a round TRIP!');
+    stream.end(null);
 
-    client.close();
+    setTimeout(function closeConnection() {
+      client.close();
+    }, 1);
   });
 
   // Server should be opening an echo stream.
   client.on('stream', (stream) => {
     info('Stream created from server.');
+
+    info(stream.id);
 
     stream.on('data', (data) => {
       info('Echo data: ' + data.toString('utf8'));
@@ -79,15 +84,17 @@ server.on('listen', () => {
 });
 
 // Screen incoming OPEN requests. Accept all for testing.
-server.screen((id, binary, sigBuf, sig, address) => {
+server.screen((id, routing, sigBuf, sig, address) => {
   info('Screening id:', id);
-  info('Screening data:', binary);
+  info('Screening routing info:', routing);
   info('Screening signature:', sig);
   info('Screening address:', address);
   return true;
 });
 
-// Client passed 'screen' and 'whitelist'.
+// Client passed 'screen'.
+// Note that 'client' in this context is a connection.
+// The other 'client' in this script is both a router and connection.
 server.on('accept', (client) => {
   // Automatically open stream for echoing.
   // We determine the stream ID, reliability, ordered
@@ -100,6 +107,9 @@ server.on('accept', (client) => {
     // Setup echo stream behavior.
     stream.on('data', (data) => {
       echoStream.send(data);
+    });
+    stream.on('error', (err) => {
+      warn('Server stream error:', err);
     });
     stream.on('close', () => {
       echoStream.close();
