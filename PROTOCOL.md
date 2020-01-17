@@ -4,6 +4,15 @@
 The details. Onwaaaard!
 
 
+## Overview
+The River Protocol (TRiP) is intended to be a flexible protocol that allows
+for the easy building of custom protocols.
+TRiP is designed to be abstracted with security by default.
+TRiP is designed to allow for different types of communication.
+Hopefully you find TRiP useful for your application.
+Enjoy!
+
+
 ## Definitions and Terms
 **packet:** Raw data transmitted, including IP, UDP, and other headers.
 **segment**: Raw data once non-TRiP headers are stripped.
@@ -22,15 +31,6 @@ The details. Onwaaaard!
 **notify:** Notification to disconnect.
 **disconnect:** Disconnect without any further waiting.  
 **kill:** Hard disconnect without sending anything further.
-
-
-## Overview
-The River Protocol (TRiP) is intended to be a flexible protocol that allows
-for the easy building of custom protocols.
-TRiP is designed to be abstracted with security by default.
-TRiP is designed to allow for different types of communication.
-Hopefully you find TRiP useful for your application.
-Enjoy!
 
 
 ## Dependencies
@@ -92,6 +92,30 @@ Exponential backoff should be used when resending.
 The peer should still report statistics (sent/received) every ping so packet drop rate can be determined.
 
 
+## Currency
+Currently currency is the number of outstanding bytes sent.
+Once a receiver flags they have received the data, those currency bytes are replenished.
+
+Note that for unreliable sending the receiver flags the latest message offset
+received.
+If sender's messages are getting lost then replenishment also suffers and
+the sending suffers.
+This can be great for congestion control.
+This can be terrible for performance of the application.
+To help recover currency, the implementation should resend a notification
+that a message was sent every RTT.
+The receiver, once getting the notification that a message was sent should
+send that the message was received, even if it was not.
+This works because we are doing unreliable send anyways.
+
+Receivers may choose to delay flagging some messages as received.
+However, this delay should be short, less than half of the senders RTT.
+If receivers cannot handle the data the currency should be renegotiated.
+When renegotiating, all streams are frozen.
+If the backpressure is temporary or local to a stream,
+then flagging backpressure on the individual stream is appropriate.
+
+
 ## User ID
 The ID field in an OPEN request is discarded.
 However, it could be used to map to a specific login key.
@@ -109,6 +133,82 @@ TODO can an issue arise if a connection on the same ports is opened/closed in qu
 TODO what is the MSL (Max Segment Lifetime)?
 TODO are segments unique to TCP?
 TODO I'm thinking that use of encryption may eliminate need for random sequence numbers...
+
+
+## STREAM IDs
+While in theory any ID could be chosen for a stream, indexes are used instead.
+Any number from [0, MAX) where MAX is the maximum numbers of streams.
+By doing this we eliminate more complex hashing methods and increase performance.
+
+
+## STREAM Closing
+Ultimately the stream must be closed from the receiving end to prevent
+allowing reopening of a stream ID before the receiver is ready.
+This acts as a flow control mechanism.
+
+
+## Unencrypted connections
+If a connection is unencrypted... God help you.
+But if this is on a VPN or something and the traffic doesn't require security...
+But seriously.
+
+There is still a required nonce.
+A sequence of random bytes is used to help validate the connection and help
+prevent accidental connections to other machines on the same network.
+A combination of random nonce, connection ID, sequence numbers,
+and IP/Port should make connection mixups improbable.
+Perhaps using a UUID in the nonce would be preferable for clusters.
+A UUID using a combination of timestamp, node ID, and random value.
+
+If this section about connections mixing up makes you nervous
+then go read the TCP spec.
+
+Technically, connection mixups are theoretically possible for any kinds of
+connection.
+They're just VERY statistically improbable.
+
+
+## STREAM Messaging Discussion
+Originally the schema for messaging was to break the message into fragments.
+The question of how long each fragment was to be and how to efficiently
+pack the messages into UDP packets arose.
+Wasting packets would slow down overall communications.
+So instead of the schema for data looking like the following:
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control and Type
+| V | Stream Id
+| V | Sequence
+| V | Fragment
+| V | Fragment Total
+| VD | Payload
+
+There are two parts to sending messages.
+First, the defining of the message by specifying the start point and length:
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control and Type
+| V | Stream Id
+| V | Offset
+| V | Length
+
+Second, the data portion:
+| Octets | Field |
+|:------ |:----- |
+| 1 | Stream Control and Type
+| V | Stream Id
+| V | Offset
+| VD | Payload
+
+The receiver can align the data and deliver the message intact.
+Using the UMTU can help ensure that messages are sent in one peice,
+reducing stress on the receiver.
+Options can be set to force the sender to align based on packet size.
+
+Resetting the stream's offset will cause the stream to go down for a time.
+Forcing all outstanding data to be sent and processed before resetting to zero.
+There should be a `flush()` with options to force a full reset on the stream.
+Full reset is very similar to closing and re-opening the stream.
 
 
 ## General Notes
@@ -250,10 +350,10 @@ SECURITY: The signature of the CHALLENGE segment MUST be done for public servers
 | 8 | Timestamp
 | 24 | Nonce client (Zeroes if unencrypted)
 | 32 | Public key client (Zeroes if unencrypted)
-| 2 | Sender Max Currency
-| 2 | Sender Currency Rate
-| 2 | Sender Max Streams
-| 4 | Sender Max Message
+| 4 | Sender Max Currency
+| 4 | Sender Max Streams
+| 4 | Sender Max Message Size
+| 4 | Sender Max Messages
 | S | SIGNATURE (OUTSIDE ENCRYPTION) |
 
 TODO should this be a part of it???
@@ -301,6 +401,14 @@ default is for the client/server to terminate.
 Try to re-resolve original connection information (maybe IP address changed).
 Notify user if server is just un-reachable.
 If valid reject found, then terminate connection.
+
+Pings are when the send address is checked.
+This allows connections to change networks or have disruptions in NAT traversal.
+
+So... If the connection receiver times out, then there should be an option
+to send a PING to the sender.
+Just in case the receiver's IP address changed.
+By default the connection should be either frozen or dropped.
 
 | Octets | Field |
 |:------ |:----- |
@@ -386,7 +494,7 @@ Close
 Close Confirm
 
 
-### Data
+#### Data
 Note that all numeric fields (stream id, sequence, fragment, total) are listed as being one octet long; really the uppermost bit indicates continuation.
 Thus, numbers can be unlimited, in theory. In practice, 4 octets should not be exceeded for performance reasons and a conforming server should discard and disconnect if this limit is exceeded for security reasons, however, allowing infinite sizes is within the standard (for unique use-cases and future compatibility).
 Limits are specified by the users of the protocol and going outside them breaks the standard, the connections are terminated by conforming implementations.
@@ -395,7 +503,7 @@ Note that default limits are set to be reasonable values for modern clients/serv
 
 | Octets | Field |
 |:------ |:----- |
-| 1 | Stream Control
+| 1 | Stream Control and Type
 | V | Stream Id
 | V | Sequence
 | V | Fragment
@@ -403,7 +511,7 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | VD | Payload
 
 
-### Data Validate Received
+#### Data Validate Received
 
 | Octets | Field |
 |:------ |:----- |
@@ -428,9 +536,9 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
+| V | Stream Id
 | 1 | Start/stop
 | 8 | Timestamp
-| V | Stream Id
 
 
 ### Backpressure Confirm
@@ -438,9 +546,9 @@ Note that default limits are set to be reasonable values for modern clients/serv
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
+| V | Stream Id
 | 1 | Start/stop
 | 8 | Timestamp
-| V | Stream Id
 
 
 ### Close
@@ -462,7 +570,7 @@ Note that default limits are set to be reasonable values for modern clients/serv
 
 
 ### Reconfigure
-
+TODO shouldn't this be a top level packet??
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
@@ -473,6 +581,7 @@ Note that default limits are set to be reasonable values for modern clients/serv
 
 
 ### Reconfigure Confirm
+TODO shouldn't this be a top level packet??
 | Octets | Field |
 |:------ |:----- |
 | 1 | Stream Control
