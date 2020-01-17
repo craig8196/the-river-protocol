@@ -47,7 +47,6 @@ const length = {
 
   RANDOM: crypto.NONCE_BYTES,
 
-  HASH: crypto.HASH_BYTES,
   NONCE: crypto.NONCE_BYTES,
   PUBLIC_KEY: crypto.PUBLIC_KEY_BYTES,
   SECRET_KEY: crypto.SECRET_KEY_BYTES,
@@ -84,10 +83,14 @@ length.UDP_MTU_DATA_MAX = length.UDP_MTU_MAX - length.IP_HEADER - length.UDP_HEA
 length.PREFIX = length.CONTROL + length.ID + length.SEQUENCE;
 /* OPEN payload length. */
 length.OPEN_DATA =
-  length.HASH +
-  length.ID + length.TIMESTAMP +
-  length.NONCE + length.PUBLIC_KEY +
-  length.CURRENCY + length.RATE + length.STREAMS + length.MESSAGE;
+  length.ID +
+  length.TIMESTAMP +
+  length.NONCE +
+  length.PUBLIC_KEY +
+  length.CURRENCY +
+  length.RATE +
+  length.STREAMS +
+  length.MESSAGE;
 /* CHALLENGE payload length. */
 length.CHALLENGE_DATA = length.OPEN_DATA;
 /* PING payload */
@@ -123,11 +126,12 @@ Object.freeze(offset);
  * @namespace
  */
 const limit = {
+  CURRENCY: 2 << 18,
   STREAMS: 1,
-  CURRENCY: 256,
-  CURRENCY_REGEN: 256,
-  MESSAGE: 65535,
+  MESSAGE: 2 << 18,
+  MESSAGES: 128,
 };
+
 Object.freeze(limit);
 
 /**
@@ -422,11 +426,6 @@ function mkOpen(openKey, ver, routing, id, time, selfNonce, selfKey, currency, r
   const tmp = Buffer.allocUnsafe(l.OPEN_DATA);
   let tlen = 0;
 
-  /* Hash unencrypted data to help ensure it wasn't tampered with. */
-  const hash = crypto.mkHash(buf.slice(0, len));
-  hash.copy(tmp, 0, 0, l.HASH);
-  tlen += l.HASH;
-
   tmp.writeUInt32BE(id, tlen);
   tlen += l.ID;
   Buffer.from(time.toBytesBE()).copy(tmp, tlen, 0, l.TIMESTAMP);
@@ -527,13 +526,7 @@ function unOpen(buf, publicKey, secretKey) {
   }
   */
 
-  const hash = m.slice(0, l.HASH);
-  if (!crypto.verifyHash(buf.slice(0, len), hash)) {
-    warn('Bad hash for OPEN!');
-    return null;
-  }
-
-  let off = l.HASH;
+  let off = 0;
   open.id = m.readUInt32BE(off);
   off += l.ID;
   open.time = mkTime(m.slice(off, l.TIMESTAMP));
@@ -594,11 +587,6 @@ function mkChallenge(peerId, seq, peerKey, id, time, selfNonce, selfKey, currenc
   /* Unencrypted data has been written. Write encrypted to tmp. */
   const tmp = Buffer.allocUnsafe(l.CHALLENGE_DATA);
   let tlen = 0;
-
-  /* Hash unencrypted data to help ensure it wasn't tampered with. */
-  const hash = crypto.mkHash(buf.slice(0, len));
-  hash.copy(tmp, 0, 0, l.HASH);
-  tlen += l.HASH;
 
   tmp.writeUInt32BE(id, tlen);
   tlen += l.ID;
@@ -696,13 +684,7 @@ function unChallenge(buf, publicKey, secretKey) {
   }
   */
 
-  const hash = m.slice(0, l.HASH);
-  if (!crypto.verifyHash(buf.slice(0, len), hash)) {
-    warn('Bad hash!');
-    return null;
-  }
-
-  let off = l.HASH;
+  let off = 0;
   chal.id = m.readUInt32BE(off);
   off += l.ID;
   chal.time = mkTime(m.slice(off, l.TIMESTAMP));
